@@ -1,6 +1,6 @@
 {
   "name": "@invintusmedia/tomp4",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Convert MPEG-TS and fMP4 streams to standard MP4 - pure JavaScript, zero dependencies",
   "main": "src/index.js",
   "module": "src/index.js",
