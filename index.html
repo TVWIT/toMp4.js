@@ -334,6 +334,62 @@
     .string { color: #50fa7b; }
     .comment { color: #6272a4; }
     
+    .install-box {
+      display: flex;
+      justify-content: center;
+      gap: 8px;
+      margin-bottom: 32px;
+      flex-wrap: wrap;
+    }
+    
+    .install-cmd {
+      display: flex;
+      align-items: center;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.85rem;
+    }
+    
+    .install-cmd select {
+      background: var(--bg-elevated);
+      border: none;
+      border-right: 1px solid var(--border);
+      padding: 10px 12px;
+      color: var(--text-muted);
+      font-family: inherit;
+      font-size: inherit;
+      cursor: pointer;
+      outline: none;
+    }
+    
+    .install-cmd code {
+      padding: 10px 14px;
+      color: var(--text);
+      user-select: all;
+    }
+    
+    .install-cmd button {
+      background: transparent;
+      border: none;
+      border-left: 1px solid var(--border);
+      padding: 10px 12px;
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    
+    .install-cmd button:hover {
+      background: var(--bg-elevated);
+      color: var(--accent);
+    }
+    
+    .install-cmd button.copied {
+      color: var(--accent);
+    }
+    
     footer {
       margin-top: 80px;
       text-align: center;
@@ -380,6 +436,21 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6v6H9z"/></svg>
           Browser & Node.js
         </span>
+      </div>
+      
+      <div class="install-box">
+        <div class="install-cmd">
+          <select id="pkgManager" title="Package manager">
+            <option value="npm">npm</option>
+            <option value="yarn">yarn</option>
+            <option value="pnpm">pnpm</option>
+            <option value="bun">bun</option>
+          </select>
+          <code id="installCmd">npm install @invintusmedia/tomp4</code>
+          <button id="copyBtn" title="Copy to clipboard">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+          </button>
+        </div>
       </div>
     </header>
     
@@ -494,6 +565,33 @@ video.src = mp4.<span class="function">toURL</span>();
     };
     
     window.clearLog = () => document.getElementById('log').innerHTML = '';
+    
+    // Install command copy
+    const pkgManager = document.getElementById('pkgManager');
+    const installCmd = document.getElementById('installCmd');
+    const copyBtn = document.getElementById('copyBtn');
+    const pkg = '@invintusmedia/tomp4';
+    
+    const commands = {
+      npm: `npm install ${pkg}`,
+      yarn: `yarn add ${pkg}`,
+      pnpm: `pnpm add ${pkg}`,
+      bun: `bun add ${pkg}`
+    };
+    
+    pkgManager.addEventListener('change', () => {
+      installCmd.textContent = commands[pkgManager.value];
+    });
+    
+    copyBtn.addEventListener('click', async () => {
+      await navigator.clipboard.writeText(installCmd.textContent);
+      copyBtn.classList.add('copied');
+      copyBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>';
+      setTimeout(() => {
+        copyBtn.classList.remove('copied');
+        copyBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>';
+      }, 2000);
+    });
     
     let currentMp4 = null;
     
