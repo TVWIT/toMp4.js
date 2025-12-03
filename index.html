@@ -248,81 +248,88 @@
     .btn:hover { background: var(--accent-dim); transform: translateY(-1px); }
     .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
     
-    .clip-controls {
+    .clip-row {
       display: flex;
       align-items: center;
-      gap: 16px;
+      gap: 12px;
       margin-bottom: 32px;
       flex-wrap: wrap;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 16px;
     }
     
-    .clip-toggle {
+    .clip-row label {
       display: flex;
       align-items: center;
       gap: 8px;
-      cursor: pointer;
-      font-size: 0.9rem;
       color: var(--text-muted);
-    }
-    
-    .clip-toggle input {
-      width: 18px;
-      height: 18px;
-      accent-color: var(--accent);
+      font-size: 0.9rem;
       cursor: pointer;
+      user-select: none;
     }
     
-    .clip-toggle:has(input:checked) {
-      color: var(--accent);
-    }
-    
-    .clip-inputs {
+    .clip-row input[type="checkbox"] {
       display: none;
-      align-items: center;
-      gap: 16px;
-      flex-wrap: wrap;
     }
     
-    .clip-inputs.active {
-      display: flex;
-    }
-    
-    .time-input {
+    .clip-toggle-pill {
       display: flex;
       align-items: center;
       gap: 6px;
-      background: var(--bg-surface);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 8px 12px;
+      padding: 6px 12px;
+      background: var(--bg-elevated);
+      border-radius: 6px;
+      transition: all 0.15s;
     }
     
-    .time-input label {
-      font-size: 0.8rem;
-      color: var(--text-muted);
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
+    .clip-row input[type="checkbox"]:checked + .clip-toggle-pill {
+      background: var(--accent);
+      color: var(--bg-deep);
     }
     
-    .time-input input {
-      width: 60px;
-      background: transparent;
-      border: none;
+    .clip-toggle-pill svg {
+      width: 14px;
+      height: 14px;
+    }
+    
+    .clip-times {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      opacity: 0.4;
+      pointer-events: none;
+      transition: opacity 0.15s;
+    }
+    
+    .clip-times.active {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    
+    .clip-times input {
+      width: 70px;
+      background: var(--bg-elevated);
+      border: 1px solid transparent;
+      border-radius: 6px;
+      padding: 6px 10px;
       color: var(--text);
       font-family: 'JetBrains Mono', monospace;
-      font-size: 0.9rem;
-      text-align: right;
+      font-size: 0.85rem;
+      text-align: center;
     }
     
-    .time-input input:focus {
+    .clip-times input:focus {
       outline: none;
+      border-color: var(--accent);
     }
     
-    .time-input input::placeholder {
+    .clip-times input::placeholder {
       color: var(--text-muted);
     }
     
-    .time-input span {
+    .clip-times span {
       color: var(--text-muted);
       font-size: 0.85rem;
     }
@@ -653,22 +660,19 @@
       </button>
     </div>
     
-    <div class="clip-controls">
-      <label class="clip-toggle">
+    <div class="clip-row">
+      <label>
         <input type="checkbox" id="enableClip">
-        <span>Clip</span>
+        <span class="clip-toggle-pill">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 4h-5L7 7H2v13h20V7h-5l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
+          Clip
+        </span>
       </label>
-      <div class="clip-inputs" id="clipInputs">
-        <div class="time-input">
-          <label for="startTime">Start</label>
-          <input type="number" id="startTime" placeholder="0" min="0" step="0.1">
-          <span>s</span>
-        </div>
-        <div class="time-input">
-          <label for="endTime">End</label>
-          <input type="number" id="endTime" placeholder="30" min="0" step="0.1">
-          <span>s</span>
-        </div>
+      <div class="clip-times" id="clipInputs">
+        <input type="number" id="startTime" placeholder="0" min="0" step="0.1">
+        <span>→</span>
+        <input type="number" id="endTime" placeholder="30" min="0" step="0.1">
+        <span>sec</span>
       </div>
     </div>
     
@@ -815,9 +819,9 @@ mp4.<span class="function">revokeURL</span>()             <span class="comment">
     
     // Clip toggle
     const enableClip = document.getElementById('enableClip');
-    const clipInputs = document.getElementById('clipInputs');
+    const clipTimes = document.getElementById('clipInputs');
     enableClip.addEventListener('change', () => {
-      clipInputs.classList.toggle('active', enableClip.checked);
+      clipTimes.classList.toggle('active', enableClip.checked);
     });
     
     // Install command copy
