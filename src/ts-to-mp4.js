@@ -909,9 +909,13 @@ class MP4Builder {
   
   buildAudioStsd() {
     const esds = this.buildEsds();
+    const channels = this.parser.audioChannels || 2;
     const mp4aData = new Uint8Array(28 + esds.byteLength);
     const view = new DataView(mp4aData.buffer);
-    view.setUint16(6, 1); view.setUint16(16, 2); view.setUint16(18, 16); view.setUint32(24, this.audioTimescale << 16);
+    view.setUint16(6, 1); 
+    view.setUint16(16, channels); // channel count
+    view.setUint16(18, 16); // sample size
+    view.setUint32(24, this.audioTimescale << 16);
     mp4aData.set(esds, 28);
     const mp4a = createBox('mp4a', mp4aData);
     const stsdHeader = new Uint8Array(4);
@@ -920,9 +924,36 @@ class MP4Builder {
   }
   
   buildEsds() {
+    // Build AudioSpecificConfig based on detected parameters
+    const SAMPLE_RATE_INDEX = {
+      96000: 0, 88200: 1, 64000: 2, 48000: 3, 44100: 4, 32000: 5,
+      24000: 6, 22050: 7, 16000: 8, 12000: 9, 11025: 10, 8000: 11, 7350: 12
+    };
+    
+    const sampleRate = this.audioTimescale;
+    const channels = this.parser.audioChannels || 2;
+    const samplingFreqIndex = SAMPLE_RATE_INDEX[sampleRate] ?? 4; // Default to 44100
+    
+    // AudioSpecificConfig: 5 bits objType + 4 bits freqIndex + 4 bits channels + 3 bits padding
+    // AAC-LC = 2
+    const audioConfig = ((2 << 11) | (samplingFreqIndex << 7) | (channels << 3)) & 0xFFFF;
+    const audioConfigHigh = (audioConfig >> 8) & 0xFF;
+    const audioConfigLow = audioConfig & 0xFF;
+    
     const data = new Uint8Array([
-      0x00, 0x00, 0x00, 0x00, 0x03, 0x19, 0x00, 0x02, 0x00, 0x04, 0x11, 0x40, 0x15,
-      0x00, 0x00, 0x00, 0x00, 0x01, 0xF4, 0x00, 0x00, 0x01, 0xF4, 0x00, 0x05, 0x02, 0x11, 0x90, 0x06, 0x01, 0x02
+      0x00, 0x00, 0x00, 0x00,  // version/flags
+      0x03, 0x19,              // ES_Descriptor tag + length
+      0x00, 0x02,              // ES_ID
+      0x00,                    // flags
+      0x04, 0x11,              // DecoderConfigDescriptor tag + length
+      0x40,                    // objectTypeIndication (AAC)
+      0x15,                    // streamType (audio) + upstream + reserved
+      0x00, 0x00, 0x00,        // bufferSizeDB
+      0x00, 0x01, 0xF4, 0x00,  // maxBitrate
+      0x00, 0x01, 0xF4, 0x00,  // avgBitrate
+      0x05, 0x02,              // DecoderSpecificInfo tag + length
+      audioConfigHigh, audioConfigLow,  // AudioSpecificConfig
+      0x06, 0x01, 0x02         // SLConfigDescriptor
     ]);
     return createBox('esds', data);
   }
@@ -1057,7 +1088,10 @@ export function convertTsToMp4(tsData, options = {}) {
   log(`Parsed ${debug.packets} TS packets`);
   log(`PAT: ${debug.patFound ? '✓' : '✗'}, PMT: ${debug.pmtFound ? '✓' : '✗'}`);
   log(`Video: ${parser.videoPid ? `PID ${parser.videoPid}` : 'none'} → ${videoInfo.name}`);
-  log(`Audio: ${parser.audioPid ? `PID ${parser.audioPid}` : 'none'} → ${audioInfo.name}${parser.audioSampleRate ? ` @ ${parser.audioSampleRate}Hz` : ''}`);
+  const audioDetails = [];
+  if (parser.audioSampleRate) audioDetails.push(`${parser.audioSampleRate}Hz`);
+  if (parser.audioChannels) audioDetails.push(`${parser.audioChannels}ch`);
+  log(`Audio: ${parser.audioPid ? `PID ${parser.audioPid}` : 'none'} → ${audioInfo.name}${audioDetails.length ? ` (${audioDetails.join(', ')})` : ''}`);
   
   // Check for structural issues first
   if (!debug.patFound) {
