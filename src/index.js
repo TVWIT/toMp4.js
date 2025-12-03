@@ -30,7 +30,7 @@
  * NOT SUPPORTED: MPEG-1/2 Video, MP3, AC-3 (require transcoding)
  */
 
-import { convertTsToMp4 } from './ts-to-mp4.js';
+import { convertTsToMp4, analyzeTsData } from './ts-to-mp4.js';
 import { convertFmp4ToMp4 } from './fmp4-to-mp4.js';
 import { parseHls, downloadHls, isHlsUrl, HlsStream, HlsVariant } from './hls.js';
 
@@ -289,6 +289,9 @@ toMp4.parseHls = parseHls;
 toMp4.downloadHls = downloadHls;
 toMp4.isHlsUrl = isHlsUrl;
 
+// Analysis utilities
+toMp4.analyze = analyzeTsData;
+
 // Version (injected at build time for dist, read from package.json for ESM)
 toMp4.version = '1.0.2';
 
@@ -298,6 +301,7 @@ export {
   Mp4Result, 
   convertTsToMp4, 
   convertFmp4ToMp4, 
+  analyzeTsData,
   detectFormat, 
   isMpegTs, 
   isFmp4, 

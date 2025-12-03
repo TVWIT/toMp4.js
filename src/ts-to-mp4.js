@@ -1065,14 +1065,131 @@ function getCodecInfo(streamType) {
 }
 
 /**
+ * Check if a video access unit contains a keyframe (IDR NAL unit)
+ */
+function isKeyframe(accessUnit) {
+  for (const nalUnit of accessUnit.nalUnits) {
+    const nalType = nalUnit[0] & 0x1F;
+    if (nalType === 5) return true; // IDR slice
+  }
+  return false;
+}
+
+/**
+ * Clip access units to a time range, snapping to keyframes
+ * @param {Array} videoAUs - Video access units
+ * @param {Array} audioAUs - Audio access units  
+ * @param {number} startTime - Start time in seconds
+ * @param {number} endTime - End time in seconds
+ * @returns {object} Clipped access units and info
+ */
+function clipAccessUnits(videoAUs, audioAUs, startTime, endTime) {
+  const PTS_PER_SECOND = 90000;
+  const startPts = startTime * PTS_PER_SECOND;
+  const endPts = endTime * PTS_PER_SECOND;
+  
+  // Find keyframe at or before startTime
+  let startIdx = 0;
+  for (let i = 0; i < videoAUs.length; i++) {
+    if (videoAUs[i].pts > startPts) break;
+    if (isKeyframe(videoAUs[i])) startIdx = i;
+  }
+  
+  // Find first frame after endTime
+  let endIdx = videoAUs.length;
+  for (let i = startIdx; i < videoAUs.length; i++) {
+    if (videoAUs[i].pts >= endPts) {
+      endIdx = i;
+      break;
+    }
+  }
+  
+  // Clip video
+  const clippedVideo = videoAUs.slice(startIdx, endIdx);
+  
+  // Get actual PTS range from clipped video
+  const actualStartPts = clippedVideo.length > 0 ? clippedVideo[0].pts : 0;
+  const actualEndPts = clippedVideo.length > 0 ? clippedVideo[clippedVideo.length - 1].pts : 0;
+  
+  // Clip audio to match video time range
+  const clippedAudio = audioAUs.filter(au => au.pts >= actualStartPts && au.pts <= actualEndPts);
+  
+  // Normalize timestamps so clip starts at 0
+  const offset = actualStartPts;
+  for (const au of clippedVideo) {
+    au.pts -= offset;
+    au.dts -= offset;
+  }
+  for (const au of clippedAudio) {
+    au.pts -= offset;
+  }
+  
+  return {
+    video: clippedVideo,
+    audio: clippedAudio,
+    actualStartTime: actualStartPts / PTS_PER_SECOND,
+    actualEndTime: actualEndPts / PTS_PER_SECOND,
+    offset
+  };
+}
+
+/**
  * Convert MPEG-TS data to MP4
  * 
  * @param {Uint8Array} tsData - MPEG-TS data
  * @param {object} options - Optional settings
  * @param {function} options.onProgress - Progress callback
+ * @param {number} options.startTime - Start time in seconds (snaps to nearest keyframe)
+ * @param {number} options.endTime - End time in seconds
  * @returns {Uint8Array} MP4 data
  * @throws {Error} If codecs are unsupported or no video found
  */
+/**
+ * Analyze MPEG-TS data without converting
+ * Returns duration, keyframe positions, and stream info
+ * 
+ * @param {Uint8Array} tsData - MPEG-TS data
+ * @returns {object} Analysis results
+ */
+export function analyzeTsData(tsData) {
+  const parser = new TSParser();
+  parser.parse(tsData);
+  parser.finalize();
+  
+  const PTS_PER_SECOND = 90000;
+  
+  // Find keyframes and their timestamps
+  const keyframes = [];
+  for (let i = 0; i < parser.videoAccessUnits.length; i++) {
+    if (isKeyframe(parser.videoAccessUnits[i])) {
+      keyframes.push({
+        index: i,
+        time: parser.videoAccessUnits[i].pts / PTS_PER_SECOND
+      });
+    }
+  }
+  
+  // Calculate duration
+  const videoDuration = parser.videoPts.length > 0 
+    ? (Math.max(...parser.videoPts) - Math.min(...parser.videoPts)) / PTS_PER_SECOND
+    : 0;
+  const audioDuration = parser.audioPts.length > 0
+    ? (Math.max(...parser.audioPts) - Math.min(...parser.audioPts)) / PTS_PER_SECOND
+    : 0;
+  
+  return {
+    duration: Math.max(videoDuration, audioDuration),
+    videoFrames: parser.videoAccessUnits.length,
+    audioFrames: parser.audioAccessUnits.length,
+    keyframes,
+    keyframeCount: keyframes.length,
+    videoCodec: getCodecInfo(parser.videoStreamType).name,
+    audioCodec: getCodecInfo(parser.audioStreamType).name,
+    audioSampleRate: parser.audioSampleRate,
+    audioChannels: parser.audioChannels
+  };
+}
+
 export function convertTsToMp4(tsData, options = {}) {
   const log = options.onProgress || (() => {});
   
@@ -1141,6 +1258,29 @@ export function convertTsToMp4(tsData, options = {}) {
   if (debug.timestampNormalized) {
     const offsetMs = (debug.timestampOffset / 90).toFixed(1);
     log(`Timestamps normalized: -${offsetMs}ms offset`);
+  }
+  
+  // Apply time range clipping if specified
+  if (options.startTime !== undefined || options.endTime !== undefined) {
+    const startTime = options.startTime || 0;
+    const endTime = options.endTime !== undefined ? options.endTime : Infinity;
+    
+    const clipResult = clipAccessUnits(
+      parser.videoAccessUnits,
+      parser.audioAccessUnits,
+      startTime,
+      endTime
+    );
+    
+    parser.videoAccessUnits = clipResult.video;
+    parser.audioAccessUnits = clipResult.audio;
+    
+    // Update PTS arrays to match
+    parser.videoPts = clipResult.video.map(au => au.pts);
+    parser.videoDts = clipResult.video.map(au => au.dts);
+    parser.audioPts = clipResult.audio.map(au => au.pts);
+    
+    log(`Clipped: ${clipResult.actualStartTime.toFixed(2)}s - ${clipResult.actualEndTime.toFixed(2)}s (${clipResult.video.length} video, ${clipResult.audio.length} audio frames)`);
   }
   
   const builder = new MP4Builder(parser);

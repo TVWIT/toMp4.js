@@ -54,3 +54,4 @@ npm login
 - Version is auto-injected into `src/index.js` and `dist/tomp4.js` during build
 - Demo page reads version from the library at runtime
 
+
