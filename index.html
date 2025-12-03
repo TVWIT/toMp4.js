@@ -247,6 +247,85 @@
     
     .btn:hover { background: var(--accent-dim); transform: translateY(-1px); }
     .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+    
+    .clip-controls {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 32px;
+      flex-wrap: wrap;
+    }
+    
+    .clip-toggle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      font-size: 0.9rem;
+      color: var(--text-muted);
+    }
+    
+    .clip-toggle input {
+      width: 18px;
+      height: 18px;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+    
+    .clip-toggle:has(input:checked) {
+      color: var(--accent);
+    }
+    
+    .clip-inputs {
+      display: none;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    
+    .clip-inputs.active {
+      display: flex;
+    }
+    
+    .time-input {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 12px;
+    }
+    
+    .time-input label {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    
+    .time-input input {
+      width: 60px;
+      background: transparent;
+      border: none;
+      color: var(--text);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.9rem;
+      text-align: right;
+    }
+    
+    .time-input input:focus {
+      outline: none;
+    }
+    
+    .time-input input::placeholder {
+      color: var(--text-muted);
+    }
+    
+    .time-input span {
+      color: var(--text-muted);
+      font-size: 0.85rem;
+    }
     .btn svg { width: 18px; height: 18px; }
     
     .output {
@@ -574,6 +653,25 @@
       </button>
     </div>
     
+    <div class="clip-controls">
+      <label class="clip-toggle">
+        <input type="checkbox" id="enableClip">
+        <span>Clip</span>
+      </label>
+      <div class="clip-inputs" id="clipInputs">
+        <div class="time-input">
+          <label for="startTime">Start</label>
+          <input type="number" id="startTime" placeholder="0" min="0" step="0.1">
+          <span>s</span>
+        </div>
+        <div class="time-input">
+          <label for="endTime">End</label>
+          <input type="number" id="endTime" placeholder="30" min="0" step="0.1">
+          <span>s</span>
+        </div>
+      </div>
+    </div>
+    
     <div class="output">
       <div class="output-header">
         <h4>
@@ -713,6 +811,13 @@ mp4.<span class="function">revokeURL</span>()             <span class="comment">
         tab.classList.add('active');
         document.querySelector(`.tab-content[data-tab="${tabId}"]`).classList.add('active');
       });
+    });
+    
+    // Clip toggle
+    const enableClip = document.getElementById('enableClip');
+    const clipInputs = document.getElementById('clipInputs');
+    enableClip.addEventListener('change', () => {
+      clipInputs.classList.toggle('active', enableClip.checked);
     });
     
     // Install command copy
@@ -867,13 +972,22 @@ mp4.<span class="function">revokeURL</span>()             <span class="comment">
       clearLog();
       
       const limit = parseInt(document.getElementById('segmentLimit').value);
+      const clipEnabled = document.getElementById('enableClip').checked;
+      const startTime = clipEnabled ? parseFloat(document.getElementById('startTime').value) : undefined;
+      const endTime = clipEnabled ? parseFloat(document.getElementById('endTime').value) : undefined;
+      
+      if (clipEnabled) {
+        log(`Clipping: ${startTime || 0}s - ${endTime || '∞'}s`, 'info');
+      }
       
       try {
         // toMp4 now handles HLS URLs automatically!
         const mp4 = await toMp4(url, { 
           onProgress: msg => log(msg, 'info'),
           quality: 'highest',
-          maxSegments: limit || undefined  // 0 = all
+          maxSegments: limit || undefined,  // 0 = all
+          startTime: !isNaN(startTime) ? startTime : undefined,
+          endTime: !isNaN(endTime) ? endTime : undefined
         });
         
         log(`Converted: ${mp4.sizeFormatted}`, 'success');
