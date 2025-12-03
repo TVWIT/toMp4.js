@@ -38,8 +38,3 @@ console.log('\n=== Output MP4 info ===');
 const result = execSync('ffprobe -v error -show_entries stream=codec_type,duration,nb_frames -of default ./test-output.mp4').toString();
 console.log(result);
 
-// Copy to downloads for testing
-execSync('cp ./test-output.mp4 ~/Downloads/x36xhzz-test.mp4');
-console.log('Copied to ~/Downloads/x36xhzz-test.mp4');
-
-
