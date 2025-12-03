@@ -105,15 +105,29 @@ function toAbsoluteUrl(relative, base) {
 }
 
 /**
+ * Represents a segment with duration info
+ */
+class HlsSegment {
+  constructor(url, duration, startTime) {
+    this.url = url;
+    this.duration = duration;
+    this.startTime = startTime;
+    this.endTime = startTime + duration;
+  }
+}
+
+/**
  * Parse an HLS playlist text
  * @param {string} text - Playlist content
  * @param {string} baseUrl - Base URL for resolving relative paths
- * @returns {{ variants: HlsVariant[], segments: string[] }}
+ * @returns {{ variants: HlsVariant[], segments: HlsSegment[] }}
  */
 function parsePlaylistText(text, baseUrl) {
   const lines = text.split('\n').map(l => l.trim());
   const variants = [];
   const segments = [];
+  let currentDuration = 0;
+  let runningTime = 0;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -137,11 +151,23 @@ function parsePlaylistText(text, baseUrl) {
       }
     }
 
+    // Parse segment duration
+    if (line.startsWith('#EXTINF:')) {
+      const match = line.match(/#EXTINF:([\d.]+)/);
+      currentDuration = match ? parseFloat(match[1]) : 0;
+    }
+
     // Parse media playlist segments
     if (line && !line.startsWith('#')) {
       // It's a segment URL
       if (!lines.some(l => l.startsWith('#EXT-X-STREAM-INF'))) {
-        segments.push(toAbsoluteUrl(line, baseUrl));
+        segments.push(new HlsSegment(
+          toAbsoluteUrl(line, baseUrl),
+          currentDuration,
+          runningTime
+        ));
+        runningTime += currentDuration;
+        currentDuration = 0;
       }
     }
   }
@@ -190,6 +216,8 @@ async function parseHls(url, options = {}) {
  * @param {object} [options] - Options
  * @param {string|number} [options.quality] - 'highest', 'lowest', or bandwidth number
  * @param {number} [options.maxSegments] - Max segments to download (default: all)
+ * @param {number} [options.startTime] - Start time in seconds (downloads segments that overlap)
+ * @param {number} [options.endTime] - End time in seconds
  * @param {function} [options.onProgress] - Progress callback
  * @returns {Promise<Uint8Array>} Combined segment data
  */
@@ -229,13 +257,35 @@ async function downloadHls(source, options = {}) {
     throw new Error('No segments found in playlist');
   }
 
-  // Limit segments if specified
-  const toDownload = options.maxSegments ? segments.slice(0, options.maxSegments) : segments;
+  // Filter by time range if specified
+  let toDownload = segments;
+  const hasTimeRange = options.startTime !== undefined || options.endTime !== undefined;
+  
+  if (hasTimeRange) {
+    const startTime = options.startTime || 0;
+    const endTime = options.endTime !== undefined ? options.endTime : Infinity;
+    
+    // Find segments that overlap with the time range
+    toDownload = segments.filter(seg => seg.endTime > startTime && seg.startTime < endTime);
+    
+    if (toDownload.length > 0) {
+      const actualStart = toDownload[0].startTime;
+      const actualEnd = toDownload[toDownload.length - 1].endTime;
+      log(`Time range: ${startTime}s-${endTime}s → segments ${actualStart.toFixed(1)}s-${actualEnd.toFixed(1)}s`);
+    }
+  }
+
+  // Limit segments if specified (applied after time filtering)
+  if (options.maxSegments && toDownload.length > options.maxSegments) {
+    toDownload = toDownload.slice(0, options.maxSegments);
+  }
+  
   log(`Downloading ${toDownload.length} segment${toDownload.length > 1 ? 's' : ''}...`);
 
   // Download all segments in parallel
   const buffers = await Promise.all(
-    toDownload.map(async (url, i) => {
+    toDownload.map(async (seg, i) => {
+      const url = seg.url || seg; // Handle both HlsSegment objects and plain URLs
       const resp = await fetch(url);
       if (!resp.ok) {
         throw new Error(`Segment ${i + 1} failed: ${resp.status}`);
@@ -254,6 +304,15 @@ async function downloadHls(source, options = {}) {
   }
 
   log(`Downloaded ${(totalSize / 1024 / 1024).toFixed(2)} MB`);
+  
+  // Return with metadata for precise clipping
+  combined._hlsTimeRange = hasTimeRange ? {
+    requestedStart: options.startTime || 0,
+    requestedEnd: options.endTime,
+    actualStart: toDownload[0]?.startTime || 0,
+    actualEnd: toDownload[toDownload.length - 1]?.endTime || 0
+  } : null;
+  
   return combined;
 }
 
@@ -270,7 +329,8 @@ function isHlsUrl(url) {
 
 export { 
   HlsStream, 
-  HlsVariant, 
+  HlsVariant,
+  HlsSegment,
   parseHls, 
   downloadHls, 
   isHlsUrl,
