@@ -1,5 +1,5 @@
 /**
- * toMp4.js v1.0.3
+ * toMp4.js v1.0.4
  * Convert MPEG-TS and fMP4 to standard MP4
  * https://github.com/TVWIT/toMp4.js
  * MIT License
@@ -1751,7 +1751,7 @@
   toMp4.isMpegTs = isMpegTs;
   toMp4.isFmp4 = isFmp4;
   toMp4.isStandardMp4 = isStandardMp4;
-  toMp4.version = '1.0.3';
+  toMp4.version = '1.0.4';
 
   return toMp4;
 });

@@ -269,9 +269,24 @@ async function toMp4(input, options = {}) {
     throw new Error('Input must be a URL string, HlsStream, Uint8Array, ArrayBuffer, or Blob');
   }
   
+  // Adjust clip times if we downloaded HLS with a time range
+  // The downloaded segments have been normalized to start at 0,
+  // so we need to adjust the requested clip times accordingly
+  let convertOptions = { ...options };
+  if (data._hlsTimeRange && (options.startTime !== undefined || options.endTime !== undefined)) {
+    const segmentStart = data._hlsTimeRange.actualStart;
+    if (options.startTime !== undefined) {
+      convertOptions.startTime = Math.max(0, options.startTime - segmentStart);
+    }
+    if (options.endTime !== undefined) {
+      convertOptions.endTime = options.endTime - segmentStart;
+    }
+    log(`Adjusted clip: ${convertOptions.startTime?.toFixed(2) || 0}s - ${convertOptions.endTime?.toFixed(2) || '∞'}s (offset: -${segmentStart.toFixed(2)}s)`);
+  }
+  
   // Convert
   log('Converting...');
-  const mp4Data = convertData(data, options);
+  const mp4Data = convertData(data, convertOptions);
   
   return new Mp4Result(mp4Data, filename);
 }
@@ -293,7 +308,7 @@ toMp4.isHlsUrl = isHlsUrl;
 toMp4.analyze = analyzeTsData;
 
 // Version (injected at build time for dist, read from package.json for ESM)
-toMp4.version = '1.0.3';
+toMp4.version = '1.0.4';
 
 // Export
 export { 
