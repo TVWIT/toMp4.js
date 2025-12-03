@@ -173,12 +173,14 @@
     
     .demo-url {
       display: flex;
+      flex-wrap: wrap;
       gap: 12px;
       margin-bottom: 32px;
     }
     
     .demo-url input {
-      flex: 1;
+      flex: 1 1 100%;
+      min-width: 0;
       background: var(--bg-surface);
       border: 1px solid var(--border);
       border-radius: 10px;
@@ -194,6 +196,7 @@
     }
     
     .demo-url select {
+      flex: 1 1 auto;
       background: var(--bg-surface);
       border: 1px solid var(--border);
       border-radius: 10px;
@@ -202,12 +205,28 @@
       font-family: 'JetBrains Mono', monospace;
       font-size: 0.85rem;
       cursor: pointer;
-      min-width: 130px;
+      min-width: 100px;
     }
     
     .demo-url select:focus {
       outline: none;
       border-color: var(--accent);
+    }
+    
+    .demo-url .btn {
+      flex: 1 1 auto;
+    }
+    
+    @media (min-width: 640px) {
+      .demo-url input {
+        flex: 1 1 auto;
+      }
+      .demo-url select {
+        flex: 0 0 auto;
+      }
+      .demo-url .btn {
+        flex: 0 0 auto;
+      }
     }
     
     .btn {
