@@ -339,6 +339,60 @@
     .string { color: #50fa7b; }
     .comment { color: #6272a4; }
     
+    .tabs {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 0;
+      overflow-x: auto;
+      padding-bottom: 2px;
+    }
+    
+    .tab {
+      background: transparent;
+      border: none;
+      padding: 10px 16px;
+      color: var(--text-muted);
+      font-family: 'Outfit', sans-serif;
+      font-size: 0.9rem;
+      font-weight: 500;
+      cursor: pointer;
+      border-radius: 8px 8px 0 0;
+      transition: all 0.15s;
+      white-space: nowrap;
+    }
+    
+    .tab:hover {
+      color: var(--text);
+      background: var(--bg-elevated);
+    }
+    
+    .tab.active {
+      background: var(--bg-surface);
+      color: var(--accent);
+    }
+    
+    .tab-content {
+      display: none;
+    }
+    
+    .tab-content.active {
+      display: block;
+    }
+    
+    .tab-panel {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: 0 12px 12px 12px;
+      padding: 20px;
+    }
+    
+    .tab-panel pre {
+      margin: 0;
+      border: none;
+      background: transparent;
+      padding: 0;
+    }
+    
     .install-box {
       display: flex;
       justify-content: center;
@@ -528,29 +582,81 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 18l6-6-6-6M8 6l-6 6 6 6"/></svg>
         Usage
       </h2>
-      <pre><code><span class="keyword">import</span> toMp4 <span class="keyword">from</span> <span class="string">'@invintusmedia/tomp4'</span>
+      
+      <div class="tabs">
+        <button class="tab active" data-tab="basic">Basic</button>
+        <button class="tab" data-tab="hls">HLS</button>
+        <button class="tab" data-tab="clip">Clipping</button>
+        <button class="tab" data-tab="analyze">Analyze</button>
+        <button class="tab" data-tab="result">Result</button>
+      </div>
+      
+      <div class="tab-panel">
+        <div class="tab-content active" data-tab="basic">
+          <pre><code><span class="keyword">import</span> toMp4 <span class="keyword">from</span> <span class="string">'@invintusmedia/tomp4'</span>
 
-<span class="comment">// HLS stream (auto-selects highest quality)</span>
-<span class="keyword">const</span> mp4 = <span class="keyword">await</span> <span class="function">toMp4</span>(<span class="string">'https://example.com/stream.m3u8'</span>)
+<span class="comment">// Convert from URL</span>
+<span class="keyword">const</span> mp4 = <span class="keyword">await</span> <span class="function">toMp4</span>(<span class="string">'https://example.com/video.ts'</span>)
 mp4.<span class="function">download</span>(<span class="string">'video.mp4'</span>)
 
-<span class="comment">// MPEG-TS segment</span>
-<span class="keyword">const</span> mp4 = <span class="keyword">await</span> <span class="function">toMp4</span>(<span class="string">'https://example.com/segment.ts'</span>)
-
-<span class="comment">// Raw bytes</span>
+<span class="comment">// Convert from raw bytes</span>
 <span class="keyword">const</span> mp4 = <span class="keyword">await</span> <span class="function">toMp4</span>(uint8Array)
 
-<span class="comment">// Pick specific quality from HLS</span>
+<span class="comment">// Play in video element</span>
+video.src = mp4.<span class="function">toURL</span>()</code></pre>
+        </div>
+        
+        <div class="tab-content" data-tab="hls">
+          <pre><code><span class="comment">// HLS stream (auto-selects highest quality)</span>
+<span class="keyword">const</span> mp4 = <span class="keyword">await</span> <span class="function">toMp4</span>(<span class="string">'https://example.com/stream.m3u8'</span>)
+
+<span class="comment">// Pick specific quality</span>
 <span class="keyword">const</span> hls = <span class="keyword">await</span> toMp4.<span class="function">parseHls</span>(<span class="string">'https://example.com/master.m3u8'</span>)
 console.<span class="function">log</span>(hls.qualities)  <span class="comment">// ['1080p', '720p', '480p']</span>
-<span class="keyword">const</span> mp4 = <span class="keyword">await</span> <span class="function">toMp4</span>(hls.<span class="function">select</span>(<span class="string">'720p'</span>))</code></pre>
+<span class="keyword">const</span> mp4 = <span class="keyword">await</span> <span class="function">toMp4</span>(hls.<span class="function">select</span>(<span class="string">'720p'</span>))
 
-      <pre><code><span class="comment">// Use the result</span>
+<span class="comment">// Limit segments (for previews)</span>
+<span class="keyword">const</span> mp4 = <span class="keyword">await</span> <span class="function">toMp4</span>(url, { maxSegments: <span class="string">5</span> })</code></pre>
+        </div>
+        
+        <div class="tab-content" data-tab="clip">
+          <pre><code><span class="comment">// Clip to time range (snaps to keyframes)</span>
+<span class="keyword">const</span> mp4 = <span class="keyword">await</span> <span class="function">toMp4</span>(data, {
+  startTime: <span class="string">5</span>,   <span class="comment">// seconds</span>
+  endTime: <span class="string">15</span>     <span class="comment">// seconds</span>
+})
+
+<span class="comment">// Clip from start</span>
+<span class="keyword">const</span> mp4 = <span class="keyword">await</span> <span class="function">toMp4</span>(data, { endTime: <span class="string">30</span> })
+
+<span class="comment">// Clip to end</span>
+<span class="keyword">const</span> mp4 = <span class="keyword">await</span> <span class="function">toMp4</span>(data, { startTime: <span class="string">60</span> })</code></pre>
+        </div>
+        
+        <div class="tab-content" data-tab="analyze">
+          <pre><code><span class="comment">// Analyze without converting</span>
+<span class="keyword">const</span> info = toMp4.<span class="function">analyze</span>(tsData)
+
+info.duration      <span class="comment">// 99.5 (seconds)</span>
+info.videoFrames   <span class="comment">// 2985</span>
+info.audioFrames   <span class="comment">// 4307</span>
+info.keyframes     <span class="comment">// [{index: 0, time: 0}, ...]</span>
+info.videoCodec    <span class="comment">// "H.264/AVC"</span>
+info.audioCodec    <span class="comment">// "AAC"</span></code></pre>
+        </div>
+        
+        <div class="tab-content" data-tab="result">
+          <pre><code><span class="comment">// Mp4Result methods</span>
 mp4.<span class="function">download</span>(<span class="string">'video.mp4'</span>)   <span class="comment">// trigger download</span>
-video.src = mp4.<span class="function">toURL</span>()     <span class="comment">// play in video element</span>
-mp4.data                     <span class="comment">// Uint8Array</span>
-mp4.<span class="function">toBlob</span>()                 <span class="comment">// Blob</span>
-mp4.<span class="function">toArrayBuffer</span>()          <span class="comment">// ArrayBuffer</span></code></pre>
+mp4.<span class="function">toURL</span>()                 <span class="comment">// object URL for video.src</span>
+mp4.<span class="function">toBlob</span>()                <span class="comment">// Blob</span>
+mp4.<span class="function">toArrayBuffer</span>()         <span class="comment">// ArrayBuffer</span>
+mp4.data                    <span class="comment">// Uint8Array</span>
+mp4.size                    <span class="comment">// bytes</span>
+mp4.sizeFormatted           <span class="comment">// "2.5 MB"</span>
+mp4.<span class="function">revokeURL</span>()             <span class="comment">// free memory</span></code></pre>
+        </div>
+      </div>
     </div>
     
     <footer>
@@ -578,6 +684,17 @@ mp4.<span class="function">toArrayBuffer</span>()          <span class="comment"
     };
     
     window.clearLog = () => document.getElementById('log').innerHTML = '';
+    
+    // Tab switching
+    document.querySelectorAll('.tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        const tabId = tab.dataset.tab;
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+        tab.classList.add('active');
+        document.querySelector(`.tab-content[data-tab="${tabId}"]`).classList.add('active');
+      });
+    });
     
     // Install command copy
     const pkgManager = document.getElementById('pkgManager');
