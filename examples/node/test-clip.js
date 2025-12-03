@@ -41,3 +41,4 @@ console.log(`Clipped: ${clippedMp4.sizeFormatted}`);
 
 console.log('\n✓ Done! Check test-full.mp4 and test-clipped.mp4');
 
+
