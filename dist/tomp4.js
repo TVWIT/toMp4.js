@@ -1,5 +1,5 @@
 /**
- * toMp4.js v1.0.4
+ * toMp4.js v1.0.5
  * Convert MPEG-TS and fMP4 to standard MP4
  * https://github.com/TVWIT/toMp4.js
  * MIT License
@@ -1214,6 +1214,7 @@
   function convertTsToMp4(tsData, options = {}) {
     const log = options.onProgress || (() => {});
     
+    log(`Parsing...`, { phase: 'convert', percent: 52 });
     const parser = new TSParser();
     parser.parse(tsData);
     parser.finalize();
@@ -1223,7 +1224,7 @@
     const audioInfo = getCodecInfo(parser.audioStreamType);
     
     // Log parsing results
-    log(`Parsed ${debug.packets} TS packets`);
+    log(`Parsed ${debug.packets} TS packets`, { phase: 'convert', percent: 55 });
     log(`PAT: ${debug.patFound ? '✓' : '✗'}, PMT: ${debug.pmtFound ? '✓' : '✗'}`);
     log(`Video: ${parser.videoPid ? `PID ${parser.videoPid}` : 'none'} → ${videoInfo.name}`);
     const audioDetails = [];
@@ -1266,7 +1267,7 @@
       );
     }
     
-    log(`Frames: ${parser.videoAccessUnits.length} video, ${parser.audioAccessUnits.length} audio`);
+    log(`Frames: ${parser.videoAccessUnits.length} video, ${parser.audioAccessUnits.length} audio`, { phase: 'convert', percent: 60 });
     if (debug.audioPesStarts) {
       log(`Audio: ${debug.audioPesStarts} PES starts → ${debug.audioPesCount || 0} processed → ${debug.audioFramesInPes || 0} ADTS frames${debug.audioSkipped ? ` (${debug.audioSkipped} skipped)` : ''}`);
     }
@@ -1280,6 +1281,8 @@
       const offsetMs = (debug.timestampOffset / 90).toFixed(1);
       log(`Timestamps normalized: -${offsetMs}ms offset`);
     }
+    
+    log(`Processing...`, { phase: 'convert', percent: 70 });
     
     // Apply time range clipping if specified
     if (options.startTime !== undefined || options.endTime !== undefined) {
@@ -1301,14 +1304,17 @@
       parser.videoDts = clipResult.video.map(au => au.dts);
       parser.audioPts = clipResult.audio.map(au => au.pts);
       
-      log(`Clipped: ${clipResult.actualStartTime.toFixed(2)}s - ${clipResult.actualEndTime.toFixed(2)}s (${clipResult.video.length} video, ${clipResult.audio.length} audio frames)`);
+      log(`Clipped: ${clipResult.actualStartTime.toFixed(2)}s - ${clipResult.actualEndTime.toFixed(2)}s (${clipResult.video.length} video, ${clipResult.audio.length} audio frames)`, { phase: 'convert', percent: 80 });
     }
     
+    log(`Building MP4...`, { phase: 'convert', percent: 85 });
     const builder = new MP4Builder(parser);
     const { width, height } = builder.getVideoDimensions();
     log(`Dimensions: ${width}x${height}`);
     
-    return builder.build();
+    const result = builder.build();
+    log(`Complete`, { phase: 'convert', percent: 100 });
+    return result;
   }
   
   default convertTsToMp4;
@@ -1751,7 +1757,7 @@
   toMp4.isMpegTs = isMpegTs;
   toMp4.isFmp4 = isFmp4;
   toMp4.isStandardMp4 = isStandardMp4;
-  toMp4.version = '1.0.4';
+  toMp4.version = '1.0.5';
 
   return toMp4;
 });

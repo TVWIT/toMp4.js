@@ -66,6 +66,22 @@ info.videoCodec    // "H.264/AVC"
 info.audioCodec    // "AAC"
 ```
 
+### progress callback
+
+```js
+const mp4 = await toMp4(url, {
+  onProgress: (msg, info) => {
+    if (info?.percent !== undefined) {
+      console.log(`${info.percent}% - ${msg}`)
+    }
+  }
+})
+// 10% - Downloading: 10%
+// 50% - Downloaded 5.2 MB
+// 60% - Frames: 300 video, 450 audio
+// 100% - Complete
+```
+
 ### use the result
 
 ```js

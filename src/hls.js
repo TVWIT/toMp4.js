@@ -280,9 +280,11 @@ async function downloadHls(source, options = {}) {
     toDownload = toDownload.slice(0, options.maxSegments);
   }
   
-  log(`Downloading ${toDownload.length} segment${toDownload.length > 1 ? 's' : ''}...`);
+  const totalSegments = toDownload.length;
+  log(`Downloading ${totalSegments} segment${totalSegments > 1 ? 's' : ''}...`);
 
-  // Download all segments in parallel
+  // Download segments with progress tracking
+  let completedSegments = 0;
   const buffers = await Promise.all(
     toDownload.map(async (seg, i) => {
       const url = seg.url || seg; // Handle both HlsSegment objects and plain URLs
@@ -290,7 +292,11 @@ async function downloadHls(source, options = {}) {
       if (!resp.ok) {
         throw new Error(`Segment ${i + 1} failed: ${resp.status}`);
       }
-      return new Uint8Array(await resp.arrayBuffer());
+      const buffer = new Uint8Array(await resp.arrayBuffer());
+      completedSegments++;
+      const percent = Math.round((completedSegments / totalSegments) * 50); // Download is 0-50%
+      log(`Downloading: ${percent}%`, { phase: 'download', percent, segment: completedSegments, totalSegments });
+      return buffer;
     })
   );
 
@@ -303,7 +309,7 @@ async function downloadHls(source, options = {}) {
     offset += buf.length;
   }
 
-  log(`Downloaded ${(totalSize / 1024 / 1024).toFixed(2)} MB`);
+  log(`Downloaded ${(totalSize / 1024 / 1024).toFixed(2)} MB`, { phase: 'download', percent: 50 });
   
   // Return with metadata for precise clipping
   combined._hlsTimeRange = hasTimeRange ? {

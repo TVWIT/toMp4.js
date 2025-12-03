@@ -308,7 +308,7 @@ toMp4.isHlsUrl = isHlsUrl;
 toMp4.analyze = analyzeTsData;
 
 // Version (injected at build time for dist, read from package.json for ESM)
-toMp4.version = '1.0.4';
+toMp4.version = '1.0.5';
 
 // Export
 export { 

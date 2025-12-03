@@ -708,6 +708,7 @@
         <button class="tab active" data-tab="basic">Basic</button>
         <button class="tab" data-tab="hls">HLS</button>
         <button class="tab" data-tab="clip">Clipping</button>
+        <button class="tab" data-tab="progress">Progress</button>
         <button class="tab" data-tab="analyze">Analyze</button>
         <button class="tab" data-tab="result">Result</button>
       </div>
@@ -752,6 +753,21 @@ console.<span class="function">log</span>(hls.qualities)  <span class="comment">
   startTime: <span class="string">5</span>,
   endTime: <span class="string">15</span>
 })</code></pre>
+        </div>
+        
+        <div class="tab-content" data-tab="progress">
+          <pre><code><span class="keyword">const</span> mp4 = <span class="keyword">await</span> <span class="function">toMp4</span>(url, {
+  <span class="function">onProgress</span>: (msg, info) => {
+    <span class="keyword">if</span> (info?.percent !== <span class="keyword">undefined</span>) {
+      console.<span class="function">log</span>(<span class="string">`${info.percent}%`</span>, msg)
+      updateProgressBar(info.percent)
+    }
+  }
+})
+<span class="comment">// 10% Downloading: 10%</span>
+<span class="comment">// 50% Downloaded 5.2 MB</span>
+<span class="comment">// 60% Frames: 300 video, 450 audio</span>
+<span class="comment">// 100% Complete</span></code></pre>
         </div>
         
         <div class="tab-content" data-tab="analyze">
