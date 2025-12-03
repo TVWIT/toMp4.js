@@ -382,7 +382,11 @@
     </div>
     
     <div class="demo-url">
-      <input type="text" id="urlInput" placeholder="Or paste an HLS URL to test..." value="https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8">
+      <input type="text" id="urlInput" placeholder="Paste an HLS URL or select a test stream...">
+      <select id="testStreams" title="Test streams">
+        <option value="">Test streams...</option>
+        <option value="https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8">Big Buck Bunny (Mux)</option>
+      </select>
       <select id="segmentLimit" title="Max segments to download">
         <option value="5" selected>5 segments</option>
         <option value="10">10 segments</option>
@@ -572,6 +576,13 @@ video.src = mp4.<span class="function">toURL</span>();
     
     // Download button
     document.getElementById('downloadBtn').addEventListener('click', () => currentMp4?.download());
+    
+    // Test stream dropdown
+    document.getElementById('testStreams').addEventListener('change', (e) => {
+      if (e.target.value) {
+        document.getElementById('urlInput').value = e.target.value;
+      }
+    });
     
     // URL fetch - now super simple thanks to library handling HLS!
     document.getElementById('fetchBtn').addEventListener('click', async () => {
