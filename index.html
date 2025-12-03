@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>toMp4.js - Convert MPEG-TS & fMP4 to MP4</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-deep: #111827;
+      --bg-surface: #1f2937;
+      --bg-elevated: #324156;
+      --accent: #7BC93C;
+      --accent-dim: #6ab832;
+      --text: #f3f4f6;
+      --text-muted: #9ca3af;
+      --border: #374151;
+      --error: #ef4444;
+      --warning: #f59e0b;
+    }
+    
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    
+    body {
+      font-family: 'Outfit', sans-serif;
+      background: var(--bg-deep);
+      color: var(--text);
+      min-height: 100vh;
+      line-height: 1.6;
+    }
+    
+    .bg-pattern {
+      position: fixed;
+      inset: 0;
+      background-image: 
+        radial-gradient(ellipse at 20% 0%, rgba(123, 201, 60, 0.08) 0%, transparent 50%),
+        radial-gradient(ellipse at 80% 100%, rgba(123, 201, 60, 0.05) 0%, transparent 50%);
+      pointer-events: none;
+    }
+    
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 60px 24px;
+      position: relative;
+    }
+    
+    header {
+      text-align: center;
+      margin-bottom: 60px;
+    }
+    
+    .logo-container {
+      margin-bottom: 20px;
+    }
+    
+    .invintus-logo {
+      height: 48px;
+      width: auto;
+    }
+    
+    h1 {
+      font-size: 3.5rem;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      margin-bottom: 12px;
+    }
+    
+    h1 span {
+      background: linear-gradient(135deg, var(--accent) 0%, #9fdb6b 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    
+    .tagline {
+      font-size: 1.25rem;
+      color: var(--text-muted);
+      font-weight: 300;
+      margin-bottom: 24px;
+    }
+    
+    .badges {
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+    
+    .badge {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      padding: 6px 14px;
+      border-radius: 20px;
+      font-size: 0.85rem;
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    
+    .badge svg { width: 14px; height: 14px; }
+    .badge.accent { border-color: var(--accent-dim); color: var(--accent); }
+    
+    .drop-zone {
+      background: var(--bg-surface);
+      border: 2px dashed var(--border);
+      border-radius: 16px;
+      padding: 60px 40px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      margin-bottom: 32px;
+    }
+    
+    .drop-zone:hover, .drop-zone.dragover {
+      border-color: var(--accent);
+      background: rgba(0, 229, 160, 0.03);
+    }
+    
+    .drop-zone svg {
+      width: 56px;
+      height: 56px;
+      stroke: var(--text-muted);
+      margin-bottom: 16px;
+      transition: all 0.2s ease;
+    }
+    
+    .drop-zone:hover svg, .drop-zone.dragover svg {
+      stroke: var(--accent);
+      transform: translateY(-4px);
+    }
+    
+    .drop-zone h3 {
+      font-size: 1.25rem;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+    
+    .drop-zone p {
+      color: var(--text-muted);
+      font-size: 0.95rem;
+    }
+    
+    input[type="file"] { display: none; }
+    
+    .demo-url {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 32px;
+    }
+    
+    .demo-url input {
+      flex: 1;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 18px;
+      color: var(--text);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.9rem;
+    }
+    
+    .demo-url input:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+    
+    .demo-url select {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 16px;
+      color: var(--text);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.85rem;
+      cursor: pointer;
+      min-width: 130px;
+    }
+    
+    .demo-url select:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+    
+    .btn {
+      background: var(--accent);
+      color: var(--bg-deep);
+      border: none;
+      padding: 14px 28px;
+      border-radius: 10px;
+      font-family: 'Outfit', sans-serif;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+    
+    .btn:hover { background: var(--accent-dim); transform: translateY(-1px); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+    .btn svg { width: 18px; height: 18px; }
+    
+    .output {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      overflow: hidden;
+      margin-bottom: 32px;
+    }
+    
+    .output-header {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    
+    .output-header h4 {
+      font-size: 0.95rem;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    
+    .output-header h4 svg { width: 16px; height: 16px; stroke: var(--accent); }
+    
+    #log {
+      padding: 20px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.85rem;
+      max-height: 300px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      color: var(--text-muted);
+    }
+    
+    #log .info { color: #5cb8ff; }
+    #log .success { color: var(--accent); }
+    #log .warn { color: var(--warning); }
+    #log .error { color: var(--error); }
+    
+    .video-container {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      overflow: hidden;
+    }
+    
+    video {
+      width: 100%;
+      display: block;
+      background: #000;
+    }
+    
+    .video-actions {
+      padding: 16px 20px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    
+    .btn-secondary {
+      background: var(--bg-elevated);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    
+    .btn-secondary:hover {
+      background: var(--bg-surface);
+      border-color: var(--accent);
+    }
+    
+    .code-section {
+      margin-top: 60px;
+    }
+    
+    .code-section h2 {
+      font-size: 1.5rem;
+      font-weight: 600;
+      margin-bottom: 20px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    
+    .code-section h2 svg { width: 24px; height: 24px; stroke: var(--accent); }
+    
+    pre {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+      overflow-x: auto;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.9rem;
+      line-height: 1.7;
+    }
+    
+    .keyword { color: #ff79c6; }
+    .function { color: #5cb8ff; }
+    .string { color: #50fa7b; }
+    .comment { color: #6272a4; }
+    
+    footer {
+      margin-top: 80px;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 0.9rem;
+    }
+    
+    footer a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+    
+    footer a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div class="bg-pattern"></div>
+  
+  <div class="container">
+    <header>
+      <div class="logo-container">
+        <svg class="invintus-logo" viewBox="0 0 801 456" fill="none" xmlns="http://www.w3.org/2000/svg" aria-label="Invintus Media">
+          <g>
+            <path fill="#374151" d="M137.7 455.3V245.7C107.1 197.5 57.8 163 0 152.2v303.2h137.7v-.1z"/>
+            <path fill="#374151" d="M749.5 149.4s-361.4-.6-398.3 0c-78.2.6-137.7 47-167.1 95.8v209.7h137.7V218l96.3.6v236.3h137.7V219.2h107.1v235.7h137.7V177.1c-1.7-9.1-7.4-16.4-18.2-22.6-9.1-5.1-22.1-5.1-32.3-5.1z"/>
+            <path fill="#7BC93C" d="M238 84.2c0-45.9-37.4-83.3-83.3-83.3-45.9 0-83.4 37.4-83.4 83.3 0 45.9 37.4 83.3 83.3 83.3 46 .5 83.4-36.9 83.4-83.3z"/>
+          </g>
+        </svg>
+      </div>
+      <h1><span>toMp4</span>.js</h1>
+      <p class="tagline">Convert MPEG-TS and fMP4 streams to standard MP4</p>
+      <div class="badges">
+        <span class="badge accent">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 12h8m-4-4v8"/></svg>
+          Zero Dependencies
+        </span>
+        <span class="badge">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4m0 12v4M2 12h4m12 0h4"/></svg>
+          Pure JavaScript
+        </span>
+        <span class="badge">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6v6H9z"/></svg>
+          Browser & Node.js
+        </span>
+      </div>
+    </header>
+    
+    <div class="drop-zone" id="dropZone">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <path d="M12 16V4m0 0l-4 4m4-4l4 4"/>
+        <path d="M20 16v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2"/>
+      </svg>
+      <h3>Drop files here</h3>
+      <p>.ts, .m4s, or .m3u8 + segments</p>
+      <input type="file" id="fileInput" accept=".ts,.m4s,.m3u8" multiple>
+    </div>
+    
+    <div style="background: var(--bg-surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 20px; margin-bottom: 32px; font-size: 0.9rem;">
+      <div style="display: flex; gap: 32px; flex-wrap: wrap;">
+        <div>
+          <div style="color: var(--accent); font-weight: 600; margin-bottom: 6px;">✓ Supported</div>
+          <div style="color: var(--text-muted);">H.264, H.265, AAC</div>
+        </div>
+        <div>
+          <div style="color: var(--error); font-weight: 600; margin-bottom: 6px;">✗ Not Supported</div>
+          <div style="color: var(--text-muted);">MPEG-1/2, MP3, AC-3</div>
+        </div>
+      </div>
+    </div>
+    
+    <div class="demo-url">
+      <input type="text" id="urlInput" placeholder="Or paste an HLS URL to test...">
+      <select id="segmentLimit" title="Max segments to download">
+        <option value="5" selected>5 segments</option>
+        <option value="10">10 segments</option>
+        <option value="30">30 segments</option>
+        <option value="100">100 segments</option>
+        <option value="0">All segments</option>
+      </select>
+      <button class="btn" id="fetchBtn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/><path d="M10 8l6 4-6 4V8z"/></svg>
+        Fetch & Convert
+      </button>
+    </div>
+    
+    <div class="output">
+      <div class="output-header">
+        <h4>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+          Console
+        </h4>
+        <button class="btn-secondary btn" style="padding: 8px 14px; font-size: 0.85rem;" onclick="clearLog()">Clear</button>
+      </div>
+      <div id="log">Ready to convert video files...</div>
+    </div>
+    
+    <div class="video-container" style="display: none;" id="videoContainer">
+      <video id="video" controls></video>
+      <div class="video-actions">
+        <button class="btn" id="downloadBtn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 4v12m0 0l-4-4m4 4l4-4"/><path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2"/></svg>
+          Download MP4
+        </button>
+        <span style="color: var(--text-muted); font-size: 0.9rem; display: flex; align-items: center; gap: 8px;" id="fileInfo"></span>
+      </div>
+    </div>
+    
+    <div class="code-section">
+      <h2>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 18l6-6-6-6M8 6l-6 6 6 6"/></svg>
+        Usage
+      </h2>
+      <pre><code><span class="comment">// Import</span>
+<span class="keyword">import</span> toMp4 <span class="keyword">from</span> <span class="string">'tomp4'</span>;
+
+<span class="comment">// Convert from URL</span>
+<span class="keyword">const</span> mp4 = <span class="keyword">await</span> <span class="function">toMp4</span>(<span class="string">'https://example.com/video.ts'</span>);
+
+<span class="comment">// Download the file</span>
+mp4.<span class="function">download</span>(<span class="string">'my-video.mp4'</span>);
+
+<span class="comment">// Or play in a video element</span>
+video.src = mp4.<span class="function">toURL</span>();
+
+<span class="comment">// Or get the raw data</span>
+<span class="keyword">const</span> data = mp4.data;  <span class="comment">// Uint8Array</span>
+<span class="keyword">const</span> blob = mp4.<span class="function">toBlob</span>();  <span class="comment">// Blob</span></code></pre>
+    </div>
+    
+    <footer>
+      <p>
+        <a href="https://github.com/TVWIT/toMp4.js" target="_blank">GitHub</a> · 
+        Made by <a href="https://invintus.com" target="_blank">Invintus Media</a> · 
+        Thanks to <a href="https://github.com/videojs/mux.js" target="_blank">mux.js</a>
+      </p>
+    </footer>
+  </div>
+
+  <script type="module">
+    import toMp4 from './src/index.js';
+    
+    const log = (msg, type = '') => {
+      const el = document.getElementById('log');
+      const span = document.createElement('span');
+      span.className = type;
+      span.textContent = msg + '\n';
+      el.appendChild(span);
+      el.scrollTop = el.scrollHeight;
+    };
+    
+    window.clearLog = () => document.getElementById('log').innerHTML = '';
+    
+    let currentMp4 = null;
+    
+    // Show converted result
+    const showResult = (mp4) => {
+      currentMp4 = mp4;
+      const video = document.getElementById('video');
+      video.src = mp4.toURL();
+      document.getElementById('videoContainer').style.display = 'block';
+      document.getElementById('fileInfo').textContent = `${mp4.filename} · ${mp4.sizeFormatted}`;
+      video.onloadedmetadata = () => log(`Video ready: ${video.duration.toFixed(2)}s`, 'success');
+      video.onerror = () => log(`Playback error: ${video.error?.message || 'Unknown'}`, 'error');
+    };
+    
+    // Combine local files into single buffer
+    const combineFiles = async (files, playlist = null) => {
+      // If we have a playlist, use it to determine order
+      if (playlist) {
+        const segmentNames = playlist.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'));
+        const fileMap = new Map(files.map(f => [f.name, f]));
+        const ordered = [];
+        
+        for (const name of segmentNames) {
+          const basename = name.split('/').pop().split('?')[0];
+          const file = fileMap.get(basename) || fileMap.get(name);
+          if (file) {
+            ordered.push(new Uint8Array(await file.arrayBuffer()));
+            log(`  ✓ ${basename}`, 'success');
+          }
+        }
+        files = ordered;
+      } else {
+        // Sort by filename and load
+        files = await Promise.all(
+          [...files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+            .map(async f => { log(`  ${f.name}`, 'info'); return new Uint8Array(await f.arrayBuffer()); })
+        );
+      }
+      
+      const total = files.reduce((s, b) => s + b.length, 0);
+      const combined = new Uint8Array(total);
+      let offset = 0;
+      for (const buf of files) { combined.set(buf, offset); offset += buf.length; }
+      return combined;
+    };
+    
+    // Process dropped files
+    const processFiles = async (files) => {
+      clearLog();
+      const fileArray = Array.from(files);
+      const m3u8File = fileArray.find(f => f.name.endsWith('.m3u8'));
+      const segmentFiles = fileArray.filter(f => f.name.endsWith('.ts') || f.name.endsWith('.m4s'));
+      
+      log(`Loaded ${fileArray.length} file(s)`, 'info');
+      
+      try {
+        let data, filename = 'video.mp4';
+        
+        if (m3u8File && segmentFiles.length > 0) {
+          // m3u8 + segment files - use playlist for ordering
+          log(`Playlist: ${m3u8File.name}, Segments: ${segmentFiles.length}`, 'info');
+          data = await combineFiles(segmentFiles, await m3u8File.text());
+          filename = m3u8File.name.replace('.m3u8', '.mp4');
+          
+        } else if (m3u8File) {
+          // Only m3u8 - check for absolute URLs
+          const text = await m3u8File.text();
+          const hasUrls = text.split('\n').some(l => l.trim().startsWith('http'));
+          
+          if (!hasUrls) {
+            throw new Error('Playlist has relative paths - also drop the .ts segment files,\nor paste a hosted URL below.');
+          }
+          // Has absolute URLs - let toMp4 handle it
+          throw new Error('Local m3u8 with URLs not yet supported - paste URL below instead');
+          
+        } else if (segmentFiles.length > 0) {
+          // Just segments
+          log(`Combining ${segmentFiles.length} segment(s)...`, 'info');
+          data = await combineFiles(segmentFiles);
+          filename = segmentFiles[0].name.replace(/\.(ts|m4s)$/i, '.mp4');
+          
+        } else {
+          throw new Error('No supported files (.ts, .m4s, .m3u8)');
+        }
+        
+        const mp4 = await toMp4(data, { filename, onProgress: msg => log(`  ${msg}`, 'info') });
+        log(`Done: ${mp4.sizeFormatted}`, 'success');
+        showResult(mp4);
+        
+      } catch (err) {
+        log(`Error: ${err.message}`, 'error');
+      }
+    };
+    
+    // Drop zone events
+    const dropZone = document.getElementById('dropZone');
+    const fileInput = document.getElementById('fileInput');
+    
+    dropZone.addEventListener('click', () => fileInput.click());
+    dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+    dropZone.addEventListener('drop', e => {
+      e.preventDefault();
+      dropZone.classList.remove('dragover');
+      if (e.dataTransfer.files.length) processFiles(e.dataTransfer.files);
+    });
+    fileInput.addEventListener('change', () => fileInput.files.length && processFiles(fileInput.files));
+    
+    // Download button
+    document.getElementById('downloadBtn').addEventListener('click', () => currentMp4?.download());
+    
+    // URL fetch - now super simple thanks to library handling HLS!
+    document.getElementById('fetchBtn').addEventListener('click', async () => {
+      const url = document.getElementById('urlInput').value.trim();
+      if (!url) return;
+      
+      clearLog();
+      
+      const limit = parseInt(document.getElementById('segmentLimit').value);
+      
+      try {
+        // toMp4 now handles HLS URLs automatically!
+        const mp4 = await toMp4(url, { 
+          onProgress: msg => log(msg, 'info'),
+          quality: 'highest',
+          maxSegments: limit || undefined  // 0 = all
+        });
+        
+        log(`Converted: ${mp4.sizeFormatted}`, 'success');
+        showResult(mp4);
+      } catch (err) {
+        log(`Error: ${err.message}`, 'error');
+        if (err.message.includes('fetch') || err.message.includes('Failed')) {
+          log('CORS may block cross-origin requests', 'warn');
+        }
+      }
+    });
+  </script>
+</body>
+</html>
+

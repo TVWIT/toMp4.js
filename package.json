@@ -1,0 +1,38 @@
+{
+  "name": "tomp4",
+  "version": "1.0.0",
+  "description": "Convert MPEG-TS and fMP4 streams to standard MP4 - pure JavaScript, zero dependencies",
+  "main": "dist/tomp4.js",
+  "module": "src/index.js",
+  "type": "module",
+  "files": [
+    "src",
+    "dist"
+  ],
+  "scripts": {
+    "build": "node build.js",
+    "dev": "npx serve . -p 3000"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TVWIT/toMp4.js.git"
+  },
+  "keywords": [
+    "mp4",
+    "mpeg-ts",
+    "mpegts",
+    "fmp4",
+    "video",
+    "converter",
+    "transmux",
+    "hls",
+    "streaming"
+  ],
+  "author": "Invintus Media",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/TVWIT/toMp4.js/issues"
+  },
+  "homepage": "https://tvwit.github.io/toMp4.js/"
+}
+
