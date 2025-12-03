@@ -1,7 +1,7 @@
 <div align="center">
   <div><b>toMp4</b></div>
   <div>turn streams into files</div>
-  <div><code>npm install tomp4</code></div>
+  <div><code>npm install @invintusmedia/tomp4</code></div>
 </div>
 
 &nbsp;
@@ -11,7 +11,7 @@ you've got an HLS stream, or some `.ts` segments, or fMP4 chunks.
 you want an `.mp4` file.
 
 ```js
-import toMp4 from 'tomp4'
+import toMp4 from '@invintusmedia/tomp4'
 
 const mp4 = await toMp4('https://example.com/stream.m3u8')
 mp4.download('my-video.mp4')
@@ -39,19 +39,36 @@ console.log(hls.qualities) // ['1080p', '720p', '480p']
 const mp4 = await toMp4(hls.select('720p'))
 ```
 
+### clip to time range
+
+```js
+// snaps to nearest keyframe
+const mp4 = await toMp4(data, {
+  startTime: 5,   // seconds
+  endTime: 15
+})
+```
+
+### analyze without converting
+
+```js
+const info = toMp4.analyze(tsData)
+
+info.duration      // 99.5 (seconds)
+info.keyframes     // [{index: 0, time: 0}, {index: 150, time: 5.0}, ...]
+info.videoCodec    // "H.264/AVC"
+info.audioCodec    // "AAC"
+```
+
 ### use the result
 
 ```js
-// download it
-mp4.download('video.mp4')
-
-// play it
-video.src = mp4.toURL()
-
-// get the bytes
-mp4.data // Uint8Array
-mp4.toArrayBuffer()
-mp4.toBlob()
+mp4.download('video.mp4')   // trigger download
+video.src = mp4.toURL()     // play in video element
+mp4.data                    // Uint8Array
+mp4.toBlob()                // Blob
+mp4.toArrayBuffer()         // ArrayBuffer
+mp4.revokeURL()             // free memory
 ```
 
 &nbsp;
@@ -85,11 +102,10 @@ works in both. ~50kb minified.
 
 ```html
 <script type="module">
-  import toMp4 from './dist/tomp4.js'
+  import toMp4 from '@invintusmedia/tomp4'
 </script>
 ```
 
 &nbsp;
 
 MIT
-
