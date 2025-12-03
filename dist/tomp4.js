@@ -1611,6 +1611,7 @@
   toMp4.isMpegTs = isMpegTs;
   toMp4.isFmp4 = isFmp4;
   toMp4.isStandardMp4 = isStandardMp4;
+  toMp4.version = '1.0.0';
 
   return toMp4;
 });

@@ -8,6 +8,10 @@ import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+// Get version from package.json
+const pkg = JSON.parse(readFileSync(`${__dirname}/package.json`, 'utf-8'));
+const version = pkg.version;
+
 const tsToMp4 = readFileSync(`${__dirname}/src/ts-to-mp4.js`, 'utf-8')
   .replace(/export (function|default)/g, '$1')
   .replace(/^export /gm, '');
@@ -17,7 +21,7 @@ const fmp4ToMp4 = readFileSync(`${__dirname}/src/fmp4-to-mp4.js`, 'utf-8')
   .replace(/^export /gm, '');
 
 const bundle = `/**
- * toMp4.js v1.0.0
+ * toMp4.js v${version}
  * Convert MPEG-TS and fMP4 to standard MP4
  * https://github.com/TVWIT/toMp4.js
  * MIT License
@@ -104,6 +108,7 @@ const bundle = `/**
   toMp4.isMpegTs = isMpegTs;
   toMp4.isFmp4 = isFmp4;
   toMp4.isStandardMp4 = isStandardMp4;
+  toMp4.version = '${version}';
 
   return toMp4;
 });
@@ -114,5 +119,11 @@ try {
 } catch (e) {}
 
 writeFileSync(`${__dirname}/dist/tomp4.js`, bundle);
-console.log('Built dist/tomp4.js');
+
+// Also update version in src/index.js
+let indexJs = readFileSync(`${__dirname}/src/index.js`, 'utf-8');
+indexJs = indexJs.replace(/toMp4\.version = '[^']*'/, `toMp4.version = '${version}'`);
+writeFileSync(`${__dirname}/src/index.js`, indexJs);
+
+console.log(`Built dist/tomp4.js (v${version})`);
 

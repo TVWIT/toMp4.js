@@ -365,7 +365,7 @@
         </svg>
         </a>
       </div>
-      <h1><span>toMp4</span>.js</h1>
+      <h1><span>toMp4</span>.js <span id="version" style="font-size: 0.4em; color: var(--text-muted); font-weight: 400;"></span></h1>
       <p class="tagline">Convert MPEG-TS and fMP4 streams to standard MP4</p>
       <div class="badges">
         <span class="badge accent">
@@ -480,6 +480,9 @@ video.src = mp4.<span class="function">toURL</span>();
 
   <script type="module">
     import toMp4 from './src/index.js';
+    
+    // Display version
+    document.getElementById('version').textContent = 'v' + toMp4.version;
     
     const log = (msg, type = '') => {
       const el = document.getElementById('log');

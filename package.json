@@ -11,7 +11,12 @@
   ],
   "scripts": {
     "build": "node build.js",
-    "dev": "npx serve . -p 3000"
+    "dev": "npx serve . -p 3000",
+    "release": "npm run build && git add -A && git commit -m \"Build v$(node -p \"require('./package.json').version\")\" && git push",
+    "release:patch": "npm version patch --no-git-tag-version && npm run release",
+    "release:minor": "npm version minor --no-git-tag-version && npm run release",
+    "release:major": "npm version major --no-git-tag-version && npm run release",
+    "prepublishOnly": "npm run build"
   },
   "repository": {
     "type": "git",
