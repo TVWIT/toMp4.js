@@ -523,21 +523,29 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 18l6-6-6-6M8 6l-6 6 6 6"/></svg>
         Usage
       </h2>
-      <pre><code><span class="comment">// Import</span>
-<span class="keyword">import</span> toMp4 <span class="keyword">from</span> <span class="string">'tomp4'</span>;
+      <pre><code><span class="keyword">import</span> toMp4 <span class="keyword">from</span> <span class="string">'@invintusmedia/tomp4'</span>
 
-<span class="comment">// Convert from URL</span>
-<span class="keyword">const</span> mp4 = <span class="keyword">await</span> <span class="function">toMp4</span>(<span class="string">'https://example.com/video.ts'</span>);
+<span class="comment">// HLS stream (auto-selects highest quality)</span>
+<span class="keyword">const</span> mp4 = <span class="keyword">await</span> <span class="function">toMp4</span>(<span class="string">'https://example.com/stream.m3u8'</span>)
+mp4.<span class="function">download</span>(<span class="string">'video.mp4'</span>)
 
-<span class="comment">// Download the file</span>
-mp4.<span class="function">download</span>(<span class="string">'my-video.mp4'</span>);
+<span class="comment">// MPEG-TS segment</span>
+<span class="keyword">const</span> mp4 = <span class="keyword">await</span> <span class="function">toMp4</span>(<span class="string">'https://example.com/segment.ts'</span>)
 
-<span class="comment">// Or play in a video element</span>
-video.src = mp4.<span class="function">toURL</span>();
+<span class="comment">// Raw bytes</span>
+<span class="keyword">const</span> mp4 = <span class="keyword">await</span> <span class="function">toMp4</span>(uint8Array)
 
-<span class="comment">// Or get the raw data</span>
-<span class="keyword">const</span> data = mp4.data;  <span class="comment">// Uint8Array</span>
-<span class="keyword">const</span> blob = mp4.<span class="function">toBlob</span>();  <span class="comment">// Blob</span></code></pre>
+<span class="comment">// Pick specific quality from HLS</span>
+<span class="keyword">const</span> hls = <span class="keyword">await</span> toMp4.<span class="function">parseHls</span>(<span class="string">'https://example.com/master.m3u8'</span>)
+console.<span class="function">log</span>(hls.qualities)  <span class="comment">// ['1080p', '720p', '480p']</span>
+<span class="keyword">const</span> mp4 = <span class="keyword">await</span> <span class="function">toMp4</span>(hls.<span class="function">select</span>(<span class="string">'720p'</span>))</code></pre>
+
+      <pre><code><span class="comment">// Use the result</span>
+mp4.<span class="function">download</span>(<span class="string">'video.mp4'</span>)   <span class="comment">// trigger download</span>
+video.src = mp4.<span class="function">toURL</span>()     <span class="comment">// play in video element</span>
+mp4.data                     <span class="comment">// Uint8Array</span>
+mp4.<span class="function">toBlob</span>()                 <span class="comment">// Blob</span>
+mp4.<span class="function">toArrayBuffer</span>()          <span class="comment">// ArrayBuffer</span></code></pre>
     </div>
     
     <footer>
