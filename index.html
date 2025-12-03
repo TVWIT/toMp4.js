@@ -620,17 +620,17 @@ console.<span class="function">log</span>(hls.qualities)  <span class="comment">
         </div>
         
         <div class="tab-content" data-tab="clip">
-          <pre><code><span class="comment">// Clip to time range (snaps to keyframes)</span>
-<span class="keyword">const</span> mp4 = <span class="keyword">await</span> <span class="function">toMp4</span>(data, {
-  startTime: <span class="string">5</span>,   <span class="comment">// seconds</span>
-  endTime: <span class="string">15</span>     <span class="comment">// seconds</span>
+          <pre><code><span class="comment">// One-step: download HLS + clip (only fetches needed segments)</span>
+<span class="keyword">const</span> mp4 = <span class="keyword">await</span> <span class="function">toMp4</span>(<span class="string">'https://example.com/stream.m3u8'</span>, {
+  startTime: <span class="string">0</span>,
+  endTime: <span class="string">30</span>
 })
 
-<span class="comment">// Clip from start</span>
-<span class="keyword">const</span> mp4 = <span class="keyword">await</span> <span class="function">toMp4</span>(data, { endTime: <span class="string">30</span> })
-
-<span class="comment">// Clip to end</span>
-<span class="keyword">const</span> mp4 = <span class="keyword">await</span> <span class="function">toMp4</span>(data, { startTime: <span class="string">60</span> })</code></pre>
+<span class="comment">// Clip existing data (snaps to keyframes)</span>
+<span class="keyword">const</span> mp4 = <span class="keyword">await</span> <span class="function">toMp4</span>(data, {
+  startTime: <span class="string">5</span>,
+  endTime: <span class="string">15</span>
+})</code></pre>
         </div>
         
         <div class="tab-content" data-tab="analyze">

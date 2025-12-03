@@ -2,7 +2,7 @@ import { downloadHls, analyzeTsData } from '../../src/index.js';
 import toMp4 from '../../src/index.js';
 import { writeFileSync } from 'fs';
 
-const url = 'https://invintus-otfp.global.ssl.fastly.net/1000000000/11bf1d3509517629fa781cd2b9477825762a23cd_160p_30fps.m3u8';
+const url = 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8';
 
 console.log('Downloading test stream...\n');
 

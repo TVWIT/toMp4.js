@@ -42,9 +42,15 @@ const mp4 = await toMp4(hls.select('720p'))
 ### clip to time range
 
 ```js
-// snaps to nearest keyframe
+// one-step: download HLS + clip (only fetches needed segments)
+const mp4 = await toMp4('https://example.com/stream.m3u8', {
+  startTime: 0,
+  endTime: 30
+})
+
+// clip existing data (snaps to keyframes)
 const mp4 = await toMp4(data, {
-  startTime: 5,   // seconds
+  startTime: 5,
   endTime: 15
 })
 ```
