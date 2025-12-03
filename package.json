@@ -1,6 +1,6 @@
 {
   "name": "@invintusmedia/tomp4",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Convert MPEG-TS and fMP4 streams to standard MP4 - pure JavaScript, zero dependencies",
   "main": "dist/tomp4.js",
   "module": "src/index.js",
@@ -40,4 +40,3 @@
   },
   "homepage": "https://tvwit.github.io/toMp4.js/"
 }
-
