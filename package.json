@@ -1,7 +1,7 @@
 {
   "name": "@invintusmedia/tomp4",
   "version": "1.0.3",
-  "description": "Convert MPEG-TS and fMP4 streams to standard MP4 - pure JavaScript, zero dependencies",
+  "description": "Convert MPEG-TS, fMP4, and HLS streams to MP4 with clipping support - pure JavaScript, zero dependencies",
   "main": "src/index.js",
   "module": "src/index.js",
   "types": "src/index.d.ts",
@@ -39,7 +39,10 @@
     "converter",
     "transmux",
     "hls",
-    "streaming"
+    "streaming",
+    "clip",
+    "trim",
+    "cut"
   ],
   "author": "Invintus Media",
   "license": "MIT",
