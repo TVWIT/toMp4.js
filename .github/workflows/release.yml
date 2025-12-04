@@ -25,6 +25,9 @@ jobs:
         id: version
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
+      - name: Run tests
+        run: npm test
+
       - name: Build
         run: npm run build
 

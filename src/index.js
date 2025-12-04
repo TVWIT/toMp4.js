@@ -37,6 +37,8 @@ import { transcode, isWebCodecsSupported } from './transcode.js';
 import { TSMuxer } from './muxers/mpegts.js';
 import { MP4Muxer } from './muxers/mp4.js';
 import { TSParser } from './parsers/mpegts.js';
+import { MP4Parser } from './parsers/mp4.js';
+import { RemoteMp4 } from './remote/index.js';
 
 /**
  * Result object returned by toMp4()
@@ -315,8 +317,15 @@ toMp4.analyze = analyzeTsData;
 toMp4.transcode = transcode;
 toMp4.isWebCodecsSupported = isWebCodecsSupported;
 
+// Parsers
+toMp4.MP4Parser = MP4Parser;
+toMp4.TSParser = TSParser;
+
+// Remote MP4 (on-demand HLS from remote MP4)
+toMp4.RemoteMp4 = RemoteMp4;
+
 // Version (injected at build time for dist, read from package.json for ESM)
-toMp4.version = '1.0.8';
+toMp4.version = '1.0.9';
 
 // Export
 export { 
@@ -336,9 +345,14 @@ export {
   HlsVariant,
   // Transcoding (browser-only)
   transcode,
+  isWebCodecsSupported,
+  // Muxers
   TSMuxer,
   MP4Muxer,
+  // Parsers
   TSParser,
-  isWebCodecsSupported
+  MP4Parser,
+  // Remote MP4 (on-demand HLS)
+  RemoteMp4
 };
 export default toMp4;

@@ -551,11 +551,9 @@ function createAvcC(sps, pps) {
 // ============================================
 
 /**
- * Transcode video using WebCodecs (browser-only)
+ * Transcode MPEG-TS video using WebCodecs (browser-only)
  * 
- * Supports both MPEG-TS and MP4 input files.
- * 
- * @param {Uint8Array} data - Input video data (MPEG-TS or MP4)
+ * @param {Uint8Array} tsData - Input MPEG-TS data
  * @param {Object} [options] - Transcode options
  * @param {number} [options.width] - Output width (default: same as input)
  * @param {number} [options.height] - Output height (default: same as input)
@@ -565,14 +563,14 @@ function createAvcC(sps, pps) {
  * @returns {Promise<Uint8Array>} - Transcoded MPEG-TS data
  * 
  * @example
- * const output = await transcode(videoData, {
+ * const output = await transcode(tsData, {
  *   width: 640,
  *   height: 360,
  *   bitrate: 1_000_000,
  *   onProgress: msg => console.log(msg)
  * });
  */
-export async function transcode(data, options = {}) {
+export async function transcode(tsData, options = {}) {
   requireWebCodecs();
   
   const log = options.onProgress || (() => {});
@@ -581,37 +579,12 @@ export async function transcode(data, options = {}) {
     keyFrameInterval = 30
   } = options;
   
-  // Detect input format and parse
-  let parser;
-  let sps = null, pps = null;
   
-  if (isMp4(data)) {
-    log('Parsing input MP4...');
-    parser = new MP4Parser();
-    parser.parse(data);
-    parser.finalize();
-    
-    // Get SPS/PPS directly from MP4 parser
-    sps = parser.sps;
-    pps = parser.pps;
-  } else if (isMpegTs(data)) {
-    log('Parsing input MPEG-TS...');
-    parser = new TSParser();
-    parser.parse(data);
-    parser.finalize();
-    
-    // Find SPS/PPS in NAL units
-    for (const au of parser.videoAccessUnits) {
-      for (const nal of au.nalUnits) {
-        const t = nal[0] & 0x1f;
-        if (t === 7 && !sps) sps = nal;
-        if (t === 8 && !pps) pps = nal;
-      }
-      if (sps && pps) break;
-    }
-  } else {
-    throw new Error('Unsupported input format. Expected MPEG-TS or MP4.');
-  }
+  // Parse input TS
+  log('Parsing input MPEG-TS...');
+  const parser = new TSParser();
+  parser.parse(tsData);
+  parser.finalize();
   
   if (!parser.videoAccessUnits || parser.videoAccessUnits.length === 0) {
     throw new Error('No video found in input');
@@ -623,6 +596,17 @@ export async function transcode(data, options = {}) {
   const hasAudio = parser.audioAccessUnits && parser.audioAccessUnits.length > 0;
   if (hasAudio) {
     log(`Found ${parser.audioAccessUnits.length} audio frames (will passthrough)`);
+  }
+  
+  // Find SPS/PPS
+  let sps = null, pps = null;
+  for (const au of parser.videoAccessUnits) {
+    for (const nal of au.nalUnits) {
+      const t = nal[0] & 0x1f;
+      if (t === 7 && !sps) sps = nal;
+      if (t === 8 && !pps) pps = nal;
+    }
+    if (sps && pps) break;
   }
   
   if (!sps || !pps) {

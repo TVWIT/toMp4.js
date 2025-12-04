@@ -85,8 +85,9 @@ export class TSMuxer {
    * @param {Uint8Array} avccData - AVCC-formatted NAL units
    * @param {boolean} isKey - Is this a keyframe
    * @param {number} pts90k - Presentation timestamp in 90kHz ticks
+   * @param {number} [dts90k] - Decode timestamp in 90kHz ticks (defaults to pts90k)
    */
-  addVideoSample(avccData, isKey, pts90k) {
+  addVideoSample(avccData, isKey, pts90k, dts90k = pts90k) {
     const nalUnits = [];
     
     // Add AUD (Access Unit Delimiter) at start of each access unit
@@ -102,20 +103,28 @@ export class TSMuxer {
     
     // Parse AVCC NALs and convert to Annex B
     let offset = 0;
-    while (offset < avccData.length - 4) {
+    let iterations = 0;
+    const maxIterations = 10000;
+    
+    while (offset + 4 <= avccData.length && iterations < maxIterations) {
+      iterations++;
       const len = (avccData[offset] << 24) | (avccData[offset + 1] << 16) | 
                   (avccData[offset + 2] << 8) | avccData[offset + 3];
       offset += 4;
-      if (len > 0 && offset + len <= avccData.length) {
-        nalUnits.push(new Uint8Array([0, 0, 0, 1]));
-        nalUnits.push(avccData.slice(offset, offset + len));
+      
+      // Safety: bail on invalid NAL length
+      if (len <= 0 || len > avccData.length - offset) {
+        break;
       }
+      
+      nalUnits.push(new Uint8Array([0, 0, 0, 1]));
+      nalUnits.push(avccData.slice(offset, offset + len));
       offset += len;
     }
     
-    // Build PES packet
+    // Build PES packet with both PTS and DTS
     const annexB = concat(nalUnits);
-    const pes = this._buildVideoPES(annexB, pts90k);
+    const pes = this._buildVideoPES(annexB, pts90k, dts90k);
     
     // Write PAT/PMT before keyframes
     if (isKey) {
@@ -130,8 +139,8 @@ export class TSMuxer {
       this._packetizePES(audioPes, 0x102, false, audio.pts, 'audio');
     }
     
-    // Packetize video PES into 188-byte TS packets
-    this._packetizePES(pes, 0x101, isKey, pts90k, 'video');
+    // Packetize video PES into 188-byte TS packets (use DTS for PCR)
+    this._packetizePES(pes, 0x101, isKey, dts90k, 'video');
   }
   
   /**
@@ -160,16 +169,32 @@ export class TSMuxer {
   
   // --- Private methods ---
   
-  _buildVideoPES(payload, pts90k) {
-    const pes = new Uint8Array(14 + payload.length);
+  _buildVideoPES(payload, pts90k, dts90k) {
+    // If PTS == DTS, only write PTS (saves 5 bytes per frame)
+    const hasDts = pts90k !== dts90k;
+    const headerLen = hasDts ? 10 : 5;
+    const pes = new Uint8Array(9 + headerLen + payload.length);
+    
     pes[0] = 0; pes[1] = 0; pes[2] = 1; // Start code
     pes[3] = 0xE0; // Stream ID (video)
     pes[4] = 0; pes[5] = 0; // Length = 0 (unbounded)
-    pes[6] = 0x80; // Flags
-    pes[7] = 0x80; // PTS present
-    pes[8] = 5; // Header length
-    this._writePTS(pes, 9, pts90k, 0x21);
-    pes.set(payload, 14);
+    pes[6] = 0x80; // Flags: data_alignment
+    
+    if (hasDts) {
+      // PTS + DTS present
+      pes[7] = 0xC0; // PTS_DTS_flags = 11
+      pes[8] = 10;   // Header length: 5 (PTS) + 5 (DTS)
+      this._writePTS(pes, 9, pts90k, 0x31);  // PTS marker = 0011
+      this._writePTS(pes, 14, dts90k, 0x11); // DTS marker = 0001
+      pes.set(payload, 19);
+    } else {
+      // PTS only
+      pes[7] = 0x80; // PTS_DTS_flags = 10
+      pes[8] = 5;    // Header length: 5 (PTS)
+      this._writePTS(pes, 9, pts90k, 0x21);  // PTS marker = 0010
+      pes.set(payload, 14);
+    }
+    
     return pes;
   }
   
@@ -220,14 +245,17 @@ export class TSMuxer {
         
         pkt[3] = 0x30 | (this.cc[cc] & 0x0F);
         pkt[4] = afLen;
-        pkt[5] = 0x50; // PCR + random_access
+        pkt[5] = 0x50; // PCR flag + random_access_indicator
+        
+        // PCR = 33-bit base (90kHz) + 6 reserved bits + 9-bit extension (27MHz)
+        // We only use the base, extension = 0
         const pcrBase = BigInt(pts90k);
         pkt[6] = Number((pcrBase >> 25n) & 0xFFn);
         pkt[7] = Number((pcrBase >> 17n) & 0xFFn);
         pkt[8] = Number((pcrBase >> 9n) & 0xFFn);
         pkt[9] = Number((pcrBase >> 1n) & 0xFFn);
-        pkt[10] = (Number(pcrBase & 1n) << 7) | 0x7E;
-        pkt[11] = 0;
+        pkt[10] = (Number(pcrBase & 1n) << 7) | 0x7E; // LSB of base + 6 reserved (111111) 
+        pkt[11] = 0; // 9-bit extension = 0
         
         pkt.set(pes.slice(offset, offset + payloadLen), 12);
         offset += payloadLen;
