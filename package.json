@@ -1,6 +1,6 @@
 {
   "name": "@invintusmedia/tomp4",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "Convert MPEG-TS, fMP4, and HLS streams to MP4 with clipping support - pure JavaScript, zero dependencies",
   "main": "src/index.js",
   "module": "src/index.js",

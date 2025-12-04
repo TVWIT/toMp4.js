@@ -513,15 +513,19 @@ export class MP4Muxer {
     if (this.parser.audioPts.length === 0) return null;
     
     const firstAudioPts = this.parser.audioPts[0];
+    
+    // When clipping with preroll, audio is normalized to start at PTS 0
+    // (matching video playback start after edit list), so no edit list needed
     if (firstAudioPts === 0) return null;
     
+    // For non-clipped content, handle any timestamp offset
     const mediaTime = Math.round(firstAudioPts * this.audioTimescale / 90000);
-    const duration = this.audioSampleSizes.length * this.audioSampleDuration;
+    const audioDuration = this.audioSampleSizes.length * this.audioSampleDuration;
     
     const elstData = new Uint8Array(16);
     const view = new DataView(elstData.buffer);
     view.setUint32(0, 1);
-    view.setUint32(4, Math.round(duration * this.videoTimescale / this.audioTimescale));
+    view.setUint32(4, Math.round(audioDuration * this.videoTimescale / this.audioTimescale));
     view.setInt32(8, mediaTime);
     view.setUint16(12, 1);
     view.setUint16(14, 0);
@@ -534,8 +538,8 @@ export class MP4Muxer {
     const data = new Uint8Array(80);
     const view = new DataView(data.buffer);
     view.setUint32(8, 257);
-    const audioDuration = this.audioSampleSizes.length * this.audioSampleDuration;
-    view.setUint32(16, Math.round(audioDuration * this.videoTimescale / this.audioTimescale));
+    // Use playback duration to match video track (for proper sync with preroll)
+    view.setUint32(16, this.calculatePlaybackDuration());
     view.setUint16(32, 0x0100);
     view.setUint32(36, 0x00010000); view.setUint32(52, 0x00010000); view.setUint32(68, 0x40000000);
     return createFullBox('tkhd', 0, 3, data);

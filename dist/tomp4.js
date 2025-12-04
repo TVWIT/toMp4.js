@@ -1,5 +1,5 @@
 /**
- * toMp4.js v1.0.7
+ * toMp4.js v1.0.8
  * Convert MPEG-TS and fMP4 to standard MP4
  * https://github.com/TVWIT/toMp4.js
  * MIT License
@@ -114,17 +114,21 @@
     // Clip audio to the REQUESTED time range (not from keyframe)
     // Audio doesn't need keyframe pre-roll
     const audioStartPts = startPts;
-    const audioEndPts = Math.min(endPts, lastFramePts);
+    const audioEndPts = Math.min(endPts, lastFramePts + 90000); // Include audio slightly past last video
     const clippedAudio = audioAUs.filter(au => au.pts >= audioStartPts && au.pts < audioEndPts);
     
-    // Normalize all timestamps so keyframe starts at 0
+    // Normalize video timestamps so keyframe starts at 0
     const offset = keyframePts;
     for (const au of clippedVideo) {
       au.pts -= offset;
       au.dts -= offset;
     }
+    
+    // Normalize audio timestamps so it starts at 0 (matching video playback start after preroll)
+    // Audio doesn't have preroll, so it should start at PTS 0 to sync with video after edit list
+    const audioOffset = audioStartPts;  // Use requested start, not keyframe
     for (const au of clippedAudio) {
-      au.pts -= offset;
+      au.pts -= audioOffset;
     }
     
     return {
@@ -752,7 +756,7 @@
   toMp4.isMpegTs = isMpegTs;
   toMp4.isFmp4 = isFmp4;
   toMp4.isStandardMp4 = isStandardMp4;
-  toMp4.version = '1.0.7';
+  toMp4.version = '1.0.8';
 
   return toMp4;
 });

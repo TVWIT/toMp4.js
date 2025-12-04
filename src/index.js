@@ -316,7 +316,7 @@ toMp4.transcode = transcode;
 toMp4.isWebCodecsSupported = isWebCodecsSupported;
 
 // Version (injected at build time for dist, read from package.json for ESM)
-toMp4.version = '1.0.7';
+toMp4.version = '1.0.8';
 
 // Export
 export { 
