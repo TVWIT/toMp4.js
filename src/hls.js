@@ -335,7 +335,7 @@ function isHlsUrl(url) {
 
 export { 
   HlsStream, 
-  HlsVariant,
+  HlsVariant, 
   HlsSegment,
   parseHls, 
   downloadHls, 

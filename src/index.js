@@ -33,6 +33,10 @@
 import { convertTsToMp4, analyzeTsData } from './ts-to-mp4.js';
 import { convertFmp4ToMp4 } from './fmp4-to-mp4.js';
 import { parseHls, downloadHls, isHlsUrl, HlsStream, HlsVariant } from './hls.js';
+import { transcode, isWebCodecsSupported } from './transcode.js';
+import { TSMuxer } from './muxers/mpegts.js';
+import { MP4Muxer } from './muxers/mp4.js';
+import { TSParser } from './parsers/mpegts.js';
 
 /**
  * Result object returned by toMp4()
@@ -307,8 +311,12 @@ toMp4.isHlsUrl = isHlsUrl;
 // Analysis utilities
 toMp4.analyze = analyzeTsData;
 
+// Transcoding (browser-only, uses WebCodecs)
+toMp4.transcode = transcode;
+toMp4.isWebCodecsSupported = isWebCodecsSupported;
+
 // Version (injected at build time for dist, read from package.json for ESM)
-toMp4.version = '1.0.5';
+toMp4.version = '1.0.6';
 
 // Export
 export { 
@@ -325,6 +333,12 @@ export {
   downloadHls,
   isHlsUrl,
   HlsStream,
-  HlsVariant
+  HlsVariant,
+  // Transcoding (browser-only)
+  transcode,
+  TSMuxer,
+  MP4Muxer,
+  TSParser,
+  isWebCodecsSupported
 };
 export default toMp4;

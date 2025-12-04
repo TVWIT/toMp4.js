@@ -1,0 +1,744 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Transcode - toMp4.js</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../shared/styles.css">
+  <style>
+    /* Orange theme override */
+    :root {
+      --accent: #f97316;
+      --accent-dim: #ea580c;
+      --accent-glow: rgba(249, 115, 22, 0.12);
+    }
+    
+    .bg-pattern {
+      background-image: 
+        radial-gradient(ellipse at 30% 0%, var(--accent-glow) 0%, transparent 50%),
+        radial-gradient(ellipse at 70% 100%, rgba(249, 115, 22, 0.04) 0%, transparent 50%);
+    }
+  </style>
+</head>
+<body>
+  <div class="bg-pattern"></div>
+  
+  <div class="container">
+    <header>
+      <h1><span>Transcode</span></h1>
+      <p class="tagline">Re-encode video with WebCodecs</p>
+      <div class="badge" id="webcodecsBadge" style="margin-top: 16px;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+          <circle cx="12" cy="12" r="10"/>
+          <path d="M12 6v6l4 2"/>
+        </svg>
+        <span id="webcodecStatus">Checking WebCodecs...</span>
+      </div>
+    </header>
+    
+    <div class="drop-zone" id="dropZone">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <path d="M12 16V4m0 0l-4 4m4-4l4 4"/>
+        <path d="M20 16v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2"/>
+      </svg>
+      <h3>Drop video file here</h3>
+      <p>.mp4, .ts, or .m4s files</p>
+      <input type="file" id="fileInput" accept=".mp4,.ts,.m4s,video/mp4,video/mp2t">
+    </div>
+    
+    <div class="input-row">
+      <input type="text" id="hlsUrl" placeholder="Or paste an HLS URL (.m3u8)...">
+      <button class="btn" id="loadBtn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/><path d="M10 8l6 4-6 4V8z"/></svg>
+        Load
+      </button>
+    </div>
+    
+    <!-- HLS Quality Selector -->
+    <div class="quality-selector" id="qualitySelector">
+      <label>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+        Quality
+      </label>
+      <select id="qualitySelect">
+        <option value="highest">Highest available</option>
+      </select>
+      <button class="btn" id="loadQualityBtn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Fetch
+      </button>
+    </div>
+    
+    <!-- Source Profile -->
+    <div class="panel" id="profilePanel" style="display: none;">
+      <div class="panel-header">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8m-4-4v4"/></svg>
+        Source Profile
+      </div>
+      <div class="panel-body">
+        <div class="grid grid-auto">
+          <div class="profile-item">
+            <label>Format</label>
+            <div class="value" id="srcFormat">—</div>
+          </div>
+          <div class="profile-item">
+            <label>Codec</label>
+            <div class="value" id="srcCodec">—</div>
+          </div>
+          <div class="profile-item">
+            <label>Resolution</label>
+            <div class="value" id="srcResolution">—</div>
+          </div>
+          <div class="profile-item">
+            <label>Frames</label>
+            <div class="value" id="srcFrames">—</div>
+          </div>
+          <div class="profile-item">
+            <label>Duration</label>
+            <div class="value" id="srcDuration">—</div>
+          </div>
+          <div class="profile-item">
+            <label>FPS</label>
+            <div class="value" id="srcFps">—</div>
+          </div>
+          <div class="profile-item">
+            <label>Audio</label>
+            <div class="value" id="srcAudio">—</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Output Settings -->
+    <div class="panel" id="settingsPanel" style="display: none;">
+      <div class="panel-header">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+        Output Settings
+      </div>
+      <div class="panel-body">
+        <div class="grid grid-3">
+          <div class="field">
+            <label>Width</label>
+            <input type="number" id="outWidth" placeholder="Same as source" min="128" step="2">
+          </div>
+          <div class="field">
+            <label>Height</label>
+            <input type="number" id="outHeight" placeholder="Same as source" min="128" step="2">
+          </div>
+          <div class="field">
+            <label>Bitrate (kbps)</label>
+            <input type="number" id="outBitrate" value="2000" min="100" step="100">
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Actions -->
+    <div class="actions" id="actionsPanel" style="display: none;">
+      <button class="btn" id="transcodeBtn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+        Transcode
+      </button>
+    </div>
+    
+    <!-- Progress Log -->
+    <div class="panel" id="logPanel">
+      <div class="panel-header">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+        Console
+        <button class="btn-secondary btn" style="padding: 4px 10px; font-size: 0.75rem; margin-left: auto;" onclick="clearLog()">Clear</button>
+      </div>
+      <div class="log-panel" id="log">Ready. Drop a video file (.mp4, .ts) or enter an HLS URL to begin.</div>
+      <div class="progress-bar" id="progressBar">
+        <div class="progress-bar-fill" id="progressFill"></div>
+      </div>
+    </div>
+    
+    <!-- Video Output -->
+    <div class="video-output" id="videoOutput">
+      <video id="video" controls></video>
+      <div class="video-actions">
+        <button class="btn" id="downloadBtn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 4v12m0 0l-4-4m4 4l4-4"/><path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2"/></svg>
+          Download
+        </button>
+        <span class="file-info" id="fileInfo"></span>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    import toMp4, { TSParser, isWebCodecsSupported } from '../../src/index.js';
+    
+    // ============================================
+    // Format Detection
+    // ============================================
+    
+    function isMpegTs(data) {
+      if (data.length < 4) return false;
+      if (data[0] === 0x47) return true;
+      for (let i = 0; i < Math.min(188, data.length); i++) {
+        if (data[i] === 0x47 && i + 188 < data.length && data[i + 188] === 0x47) return true;
+      }
+      return false;
+    }
+    
+    function isMp4(data) {
+      if (data.length < 8) return false;
+      const type = String.fromCharCode(data[4], data[5], data[6], data[7]);
+      return type === 'ftyp';
+    }
+    
+    // ============================================
+    // State
+    // ============================================
+    
+    let sourceData = null;
+    let sourceInfo = null;
+    let outputBlob = null;
+    let outputUrl = null;
+    let hlsStream = null;
+    
+    // ============================================
+    // UI Helpers
+    // ============================================
+    
+    const $ = id => document.getElementById(id);
+    
+    const log = (msg, type = '') => {
+      const el = $('log');
+      const span = document.createElement('span');
+      span.className = type;
+      span.textContent = msg + '\n';
+      el.appendChild(span);
+      el.scrollTop = el.scrollHeight;
+    };
+    
+    window.clearLog = () => $('log').textContent = '';
+    
+    const setProgress = (percent) => {
+      const bar = $('progressBar');
+      const fill = $('progressFill');
+      if (percent === null) {
+        bar.classList.remove('visible');
+      } else {
+        bar.classList.add('visible');
+        fill.style.width = `${percent}%`;
+      }
+    };
+    
+    const showProfile = (info) => {
+      $('profilePanel').style.display = 'block';
+      $('srcFormat').textContent = info.format || 'Unknown';
+      $('srcCodec').textContent = info.codec || 'H.264';
+      $('srcResolution').textContent = `${info.width}×${info.height}`;
+      $('srcFrames').textContent = info.frames.toLocaleString();
+      $('srcDuration').textContent = `${info.duration.toFixed(1)}s`;
+      $('srcFps').textContent = info.fps.toFixed(1);
+      $('srcAudio').textContent = info.hasAudio ? `${info.audioFrames} frames` : 'None';
+      
+      // Prefill output dimensions
+      $('outWidth').placeholder = info.width;
+      $('outHeight').placeholder = info.height;
+    };
+    
+    const showSettings = () => {
+      $('settingsPanel').style.display = 'block';
+      $('actionsPanel').style.display = 'flex';
+    };
+    
+    const hideQualitySelector = () => {
+      $('qualitySelector').classList.remove('visible');
+      hlsStream = null;
+    };
+    
+    const showQualitySelector = (hls) => {
+      hlsStream = hls;
+      const select = $('qualitySelect');
+      
+      // Clear existing options
+      select.innerHTML = '';
+      
+      // Add quality options
+      if (hls.variants && hls.variants.length > 0) {
+        // Add "highest" option
+        const highestOpt = document.createElement('option');
+        highestOpt.value = 'highest';
+        highestOpt.textContent = 'Highest available';
+        select.appendChild(highestOpt);
+        
+        // Add individual qualities
+        for (const variant of hls.variants) {
+          const opt = document.createElement('option');
+          opt.value = variant.bandwidth;
+          
+          // Build label
+          let label = '';
+          if (variant.resolution) {
+            label = variant.resolution;
+          } else if (variant.bandwidth) {
+            label = `${Math.round(variant.bandwidth / 1000)} kbps`;
+          }
+          if (variant.name) {
+            label = variant.name + (label ? ` (${label})` : '');
+          }
+          opt.textContent = label || `${variant.bandwidth} bps`;
+          select.appendChild(opt);
+        }
+        
+        // Add "lowest" option
+        const lowestOpt = document.createElement('option');
+        lowestOpt.value = 'lowest';
+        lowestOpt.textContent = 'Lowest available';
+        select.appendChild(lowestOpt);
+      } else {
+        // Single stream, no variants
+        const opt = document.createElement('option');
+        opt.value = 'default';
+        opt.textContent = 'Default stream';
+        select.appendChild(opt);
+      }
+      
+      $('qualitySelector').classList.add('visible');
+    };
+    
+    const showOutput = (blob, filename) => {
+      if (outputUrl) URL.revokeObjectURL(outputUrl);
+      outputBlob = blob;
+      outputUrl = URL.createObjectURL(blob);
+      
+      const video = $('video');
+      video.src = outputUrl;
+      
+      const sizeMB = (blob.size / 1024 / 1024).toFixed(2);
+      $('fileInfo').textContent = `${filename} · ${sizeMB} MB`;
+      $('videoOutput').classList.add('visible');
+    };
+    
+    // ============================================
+    // Analysis Functions
+    // ============================================
+    
+    const analyzeMp4 = (data) => {
+      const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+      const readString = (off, len) => {
+        let s = '';
+        for (let i = 0; i < len; i++) s += String.fromCharCode(data[off + i]);
+        return s;
+      };
+      
+      let width = 0, height = 0, duration = 0, timescale = 1000;
+      let videoFrames = 0, audioFrames = 0;
+      let codec = 'H.264';
+      let hasAudio = false;
+      
+      // Find moov box
+      let offset = 0;
+      while (offset + 8 <= data.length) {
+        const size = view.getUint32(offset);
+        const type = readString(offset + 4, 4);
+        if (size < 8) break;
+        
+        if (type === 'moov') {
+          // Parse moov
+          let moovOff = offset + 8;
+          const moovEnd = offset + size;
+          
+          while (moovOff + 8 <= moovEnd) {
+            const mSize = view.getUint32(moovOff);
+            const mType = readString(moovOff + 4, 4);
+            if (mSize < 8) break;
+            
+            if (mType === 'mvhd') {
+              const version = data[moovOff + 8];
+              if (version === 1) {
+                timescale = view.getUint32(moovOff + 28);
+                duration = Number(view.getBigUint64(moovOff + 32)) / timescale;
+              } else {
+                timescale = view.getUint32(moovOff + 20);
+                duration = view.getUint32(moovOff + 24) / timescale;
+              }
+            } else if (mType === 'trak') {
+              // Look for track info
+              let trakOff = moovOff + 8;
+              const trakEnd = moovOff + mSize;
+              let trackType = null;
+              let trackFrames = 0;
+              
+              while (trakOff + 8 <= trakEnd) {
+                const tSize = view.getUint32(trakOff);
+                const tType = readString(trakOff + 4, 4);
+                if (tSize < 8) break;
+                
+                if (tType === 'tkhd') {
+                  const ver = data[trakOff + 8];
+                  const wOff = ver === 1 ? trakOff + 92 : trakOff + 84;
+                  const tw = view.getUint32(wOff) >> 16;
+                  const th = view.getUint32(wOff + 4) >> 16;
+                  if (tw > 0 && th > 0 && width === 0) {
+                    width = tw;
+                    height = th;
+                  }
+                } else if (tType === 'mdia') {
+                  let mdiaOff = trakOff + 8;
+                  const mdiaEnd = trakOff + tSize;
+                  
+                  while (mdiaOff + 8 <= mdiaEnd) {
+                    const dSize = view.getUint32(mdiaOff);
+                    const dType = readString(mdiaOff + 4, 4);
+                    if (dSize < 8) break;
+                    
+                    if (dType === 'hdlr') {
+                      trackType = readString(mdiaOff + 16, 4);
+                    } else if (dType === 'minf') {
+                      let minfOff = mdiaOff + 8;
+                      const minfEnd = mdiaOff + dSize;
+                      
+                      while (minfOff + 8 <= minfEnd) {
+                        const sSize = view.getUint32(minfOff);
+                        const sType = readString(minfOff + 4, 4);
+                        if (sSize < 8) break;
+                        
+                        if (sType === 'stbl') {
+                          let stblOff = minfOff + 8;
+                          const stblEnd = minfOff + sSize;
+                          
+                          while (stblOff + 8 <= stblEnd) {
+                            const bSize = view.getUint32(stblOff);
+                            const bType = readString(stblOff + 4, 4);
+                            if (bSize < 8) break;
+                            
+                            if (bType === 'stsz') {
+                              trackFrames = view.getUint32(stblOff + 16);
+                            } else if (bType === 'stsd' && trackType === 'vide') {
+                              let stsdOff = stblOff + 16;
+                              const stsdEnd = stblOff + bSize;
+                              if (stsdOff + 86 <= stsdEnd) {
+                                let avcOff = stsdOff + 78;
+                                while (avcOff + 8 <= stsdEnd) {
+                                  const aSize = view.getUint32(avcOff);
+                                  const aType = readString(avcOff + 4, 4);
+                                  if (aSize < 8) break;
+                                  if (aType === 'avcC' && avcOff + 12 <= stsdEnd) {
+                                    const profile = data[avcOff + 9];
+                                    const compat = data[avcOff + 10];
+                                    const level = data[avcOff + 11];
+                                    codec = `avc1.${profile.toString(16).padStart(2,'0')}${compat.toString(16).padStart(2,'0')}${level.toString(16).padStart(2,'0')}`;
+                                    break;
+                                  }
+                                  avcOff += aSize;
+                                }
+                              }
+                            }
+                            stblOff += bSize;
+                          }
+                        }
+                        minfOff += sSize;
+                      }
+                    }
+                    mdiaOff += dSize;
+                  }
+                }
+                trakOff += tSize;
+              }
+              
+              if (trackType === 'vide') {
+                videoFrames = trackFrames;
+              } else if (trackType === 'soun') {
+                hasAudio = true;
+                audioFrames = trackFrames;
+              }
+            }
+            moovOff += mSize;
+          }
+          break;
+        }
+        offset += size;
+      }
+      
+      const fps = duration > 0 ? videoFrames / duration : 30;
+      
+      return {
+        format: 'MP4',
+        codec,
+        width: width || 1920,
+        height: height || 1080,
+        frames: videoFrames,
+        duration,
+        fps,
+        hasAudio,
+        audioFrames
+      };
+    };
+    
+    const analyzeTs = (data) => {
+      const parser = new TSParser();
+      parser.parse(data);
+      parser.finalize();
+      
+      if (!parser.videoAccessUnits || parser.videoAccessUnits.length === 0) {
+        throw new Error('No video found in source');
+      }
+      
+      const frames = parser.videoAccessUnits.length;
+      const firstPts = parser.videoAccessUnits[0]?.pts || 0;
+      const lastPts = parser.videoAccessUnits[frames - 1]?.pts || firstPts;
+      const duration = (lastPts - firstPts) / 90000;
+      const fps = frames / duration;
+      
+      let codec = 'H.264';
+      for (const au of parser.videoAccessUnits) {
+        for (const nal of au.nalUnits) {
+          const t = nal[0] & 0x1f;
+          if (t === 7) {
+            codec = `avc1.${nal[1].toString(16).padStart(2,'0')}${nal[2].toString(16).padStart(2,'0')}${nal[3].toString(16).padStart(2,'0')}`;
+            break;
+          }
+        }
+        if (codec !== 'H.264') break;
+      }
+      
+      return {
+        format: 'MPEG-TS',
+        codec,
+        width: parser.videoWidth || 1920,
+        height: parser.videoHeight || 1080,
+        frames,
+        duration,
+        fps,
+        hasAudio: parser.audioAccessUnits && parser.audioAccessUnits.length > 0,
+        audioFrames: parser.audioAccessUnits?.length || 0
+      };
+    };
+    
+    const analyzeSource = (data) => {
+      if (isMp4(data)) {
+        return analyzeMp4(data);
+      } else if (isMpegTs(data)) {
+        return analyzeTs(data);
+      } else {
+        throw new Error('Unsupported format. Expected MP4 or MPEG-TS.');
+      }
+    };
+    
+    // ============================================
+    // Core Functions
+    // ============================================
+    
+    const loadSource = async (data, name = 'video') => {
+      clearLog();
+      hideQualitySelector();
+      log(`Loading ${name}...`, 'info');
+      
+      try {
+        sourceData = data;
+        sourceInfo = analyzeSource(data);
+        
+        log(`Format: ${sourceInfo.format}`, 'info');
+        log(`Codec: ${sourceInfo.codec}`, 'info');
+        log(`Resolution: ${sourceInfo.width}×${sourceInfo.height}`, 'info');
+        log(`Duration: ${sourceInfo.duration.toFixed(2)}s, ${sourceInfo.frames} frames @ ${sourceInfo.fps.toFixed(1)} fps`, 'info');
+        if (sourceInfo.hasAudio) {
+          log(`Audio: ${sourceInfo.audioFrames} frames (will passthrough)`, 'info');
+        }
+        log('Ready to transcode', 'success');
+        
+        showProfile(sourceInfo);
+        showSettings();
+        
+      } catch (err) {
+        log(`Error: ${err.message}`, 'error');
+        sourceData = null;
+        sourceInfo = null;
+      }
+    };
+    
+    const loadHlsQuality = async () => {
+      if (!hlsStream) return;
+      
+      const quality = $('qualitySelect').value;
+      clearLog();
+      log(`Fetching HLS stream (${quality})...`, 'info');
+      
+      $('loadQualityBtn').disabled = true;
+      
+      try {
+        const data = await toMp4.downloadHls(hlsStream, {
+          quality: quality === 'highest' || quality === 'lowest' ? quality : parseInt(quality),
+          maxSegments: 30,
+          onProgress: msg => log(`  ${msg}`, 'info')
+        });
+        
+        hideQualitySelector();
+        await loadSource(data, 'HLS stream');
+        
+      } catch (err) {
+        log(`Error: ${err.message}`, 'error');
+        if (err.message.includes('fetch') || err.message.includes('Failed')) {
+          log('CORS may be blocking the request.', 'error');
+        }
+      } finally {
+        $('loadQualityBtn').disabled = false;
+      }
+    };
+    
+    const doTranscode = async () => {
+      if (!sourceData || !sourceInfo) return;
+      
+      const outWidth = parseInt($('outWidth').value) || sourceInfo.width;
+      const outHeight = parseInt($('outHeight').value) || sourceInfo.height;
+      const bitrate = (parseInt($('outBitrate').value) || 2000) * 1000;
+      
+      $('transcodeBtn').disabled = true;
+      setProgress(0);
+      
+      try {
+        log(`Transcoding to ${outWidth}×${outHeight} @ ${bitrate/1000} kbps...`, 'info');
+        
+        const startTime = performance.now();
+        
+        const result = await toMp4.transcode(sourceData, {
+          width: outWidth,
+          height: outHeight,
+          bitrate,
+          onProgress: (msg) => {
+            log(`  ${msg}`, 'info');
+            const match = msg.match(/Processed (\d+)\/(\d+)/);
+            if (match) {
+              const pct = Math.round((parseInt(match[1]) / parseInt(match[2])) * 100);
+              setProgress(pct);
+            }
+          }
+        });
+        
+        const elapsed = (performance.now() - startTime) / 1000;
+        const sizeMB = (result.length / 1024 / 1024).toFixed(2);
+        
+        setProgress(100);
+        log(`Done in ${elapsed.toFixed(1)}s`, 'success');
+        log(`Output: ${sizeMB} MB MPEG-TS`, 'success');
+        
+        log('Converting to MP4 for playback...', 'info');
+        const mp4 = await toMp4(result);
+        
+        const blob = new Blob([mp4.data], { type: 'video/mp4' });
+        showOutput(blob, 'transcoded.mp4');
+        
+      } catch (err) {
+        log(`Transcode error: ${err.message}`, 'error');
+        console.error(err);
+      } finally {
+        $('transcodeBtn').disabled = false;
+        setTimeout(() => setProgress(null), 2000);
+      }
+    };
+    
+    // ============================================
+    // Event Handlers
+    // ============================================
+    
+    // Check WebCodecs support
+    const badge = $('webcodecsBadge');
+    const status = $('webcodecStatus');
+    if (isWebCodecsSupported()) {
+      badge.classList.add('supported');
+      status.textContent = 'WebCodecs supported';
+    } else {
+      badge.classList.add('unsupported');
+      status.textContent = 'WebCodecs not available';
+      log('WebCodecs is not available in this browser. Transcoding requires Chrome 94+, Edge 94+, or Safari 16.4+.', 'error');
+    }
+    
+    // File drop
+    const dropZone = $('dropZone');
+    const fileInput = $('fileInput');
+    
+    dropZone.addEventListener('click', () => fileInput.click());
+    dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+    dropZone.addEventListener('drop', async e => {
+      e.preventDefault();
+      dropZone.classList.remove('dragover');
+      hideQualitySelector();
+      
+      const file = e.dataTransfer.files[0];
+      if (file) {
+        const data = new Uint8Array(await file.arrayBuffer());
+        await loadSource(data, file.name);
+      }
+    });
+    
+    fileInput.addEventListener('change', async () => {
+      hideQualitySelector();
+      const file = fileInput.files[0];
+      if (file) {
+        const data = new Uint8Array(await file.arrayBuffer());
+        await loadSource(data, file.name);
+      }
+    });
+    
+    // HLS URL loading - first parse to show qualities
+    $('loadBtn').addEventListener('click', async () => {
+      const url = $('hlsUrl').value.trim();
+      if (!url) return;
+      
+      clearLog();
+      
+      // Hide panels while loading
+      $('profilePanel').style.display = 'none';
+      $('settingsPanel').style.display = 'none';
+      $('actionsPanel').style.display = 'none';
+      
+      log(`Parsing HLS: ${url}`, 'info');
+      
+      try {
+        const hls = await toMp4.parseHls(url);
+        
+        if (hls.variants && hls.variants.length > 1) {
+          log(`Found ${hls.variants.length} quality levels:`, 'info');
+          for (const v of hls.variants) {
+            const res = v.resolution || '';
+            const bw = v.bandwidth ? `${Math.round(v.bandwidth / 1000)} kbps` : '';
+            log(`  • ${v.name || res || bw}${res && bw ? ` (${bw})` : ''}`, 'info');
+          }
+          log('Select a quality and click Fetch', 'success');
+          showQualitySelector(hls);
+        } else {
+          // Single quality - load directly
+          log('Single quality stream, loading...', 'info');
+          const data = await toMp4.downloadHls(hls, {
+            quality: 'highest',
+            maxSegments: 30,
+            onProgress: msg => log(`  ${msg}`, 'info')
+          });
+          await loadSource(data, url.split('/').pop() || 'stream');
+        }
+        
+      } catch (err) {
+        log(`Error: ${err.message}`, 'error');
+        if (err.message.includes('fetch') || err.message.includes('Failed')) {
+          log('CORS may be blocking the request. Try a local file instead.', 'error');
+        }
+      }
+    });
+    
+    // Quality selection fetch
+    $('loadQualityBtn').addEventListener('click', loadHlsQuality);
+    
+    // Transcode button
+    $('transcodeBtn').addEventListener('click', doTranscode);
+    
+    // Download button
+    $('downloadBtn').addEventListener('click', () => {
+      if (!outputBlob) return;
+      const a = document.createElement('a');
+      a.href = outputUrl;
+      a.download = 'transcoded.mp4';
+      a.click();
+    });
+  </script>
+</body>
+</html>
