@@ -1,5 +1,5 @@
 /**
- * toMp4.js v1.0.6
+ * toMp4.js v1.0.7
  * Convert MPEG-TS and fMP4 to standard MP4
  * https://github.com/TVWIT/toMp4.js
  * MIT License
@@ -59,7 +59,9 @@
   }
   
   /**
-   * Clip access units to a time range, snapping to keyframes
+   * Clip access units to a time range, snapping to keyframes for decode
+   * but using edit list for precise playback timing
+   * 
    * @param {Array} videoAUs - Video access units
    * @param {Array} audioAUs - Audio access units  
    * @param {number} startTime - Start time in seconds
@@ -71,34 +73,52 @@
     const startPts = startTime * PTS_PER_SECOND;
     const endPts = endTime * PTS_PER_SECOND;
     
-    // Find keyframe at or before startTime
-    let startIdx = 0;
+    // Find keyframe at or before startTime (needed for decoding)
+    let keyframeIdx = 0;
     for (let i = 0; i < videoAUs.length; i++) {
       if (videoAUs[i].pts > startPts) break;
-      if (isKeyframe(videoAUs[i])) startIdx = i;
+      if (isKeyframe(videoAUs[i])) keyframeIdx = i;
     }
     
-    // Find first frame after endTime
+    // Find first frame at or after endTime
     let endIdx = videoAUs.length;
-    for (let i = startIdx; i < videoAUs.length; i++) {
+    for (let i = keyframeIdx; i < videoAUs.length; i++) {
       if (videoAUs[i].pts >= endPts) {
         endIdx = i;
         break;
       }
     }
     
-    // Clip video
-    const clippedVideo = videoAUs.slice(startIdx, endIdx);
+    // Clip video starting from keyframe (for proper decoding)
+    const clippedVideo = videoAUs.slice(keyframeIdx, endIdx);
     
-    // Get actual PTS range from clipped video
-    const actualStartPts = clippedVideo.length > 0 ? clippedVideo[0].pts : 0;
-    const actualEndPts = clippedVideo.length > 0 ? clippedVideo[clippedVideo.length - 1].pts : 0;
+    if (clippedVideo.length === 0) {
+      return {
+        video: [],
+        audio: [],
+        actualStartTime: startTime,
+        actualEndTime: endTime,
+        offset: 0,
+        preroll: 0
+      };
+    }
     
-    // Clip audio to match video time range
-    const clippedAudio = audioAUs.filter(au => au.pts >= actualStartPts && au.pts <= actualEndPts);
+    // Get PTS of keyframe and requested start
+    const keyframePts = clippedVideo[0].pts;
+    const lastFramePts = clippedVideo[clippedVideo.length - 1].pts;
     
-    // Normalize timestamps so clip starts at 0
-    const offset = actualStartPts;
+    // Pre-roll: time between keyframe and requested start
+    // This is the time the decoder needs to process but player shouldn't display
+    const prerollPts = Math.max(0, startPts - keyframePts);
+    
+    // Clip audio to the REQUESTED time range (not from keyframe)
+    // Audio doesn't need keyframe pre-roll
+    const audioStartPts = startPts;
+    const audioEndPts = Math.min(endPts, lastFramePts);
+    const clippedAudio = audioAUs.filter(au => au.pts >= audioStartPts && au.pts < audioEndPts);
+    
+    // Normalize all timestamps so keyframe starts at 0
+    const offset = keyframePts;
     for (const au of clippedVideo) {
       au.pts -= offset;
       au.dts -= offset;
@@ -110,9 +130,12 @@
     return {
       video: clippedVideo,
       audio: clippedAudio,
-      actualStartTime: actualStartPts / PTS_PER_SECOND,
-      actualEndTime: actualEndPts / PTS_PER_SECOND,
-      offset
+      actualStartTime: keyframePts / PTS_PER_SECOND,  // Where decode starts (keyframe)
+      actualEndTime: lastFramePts / PTS_PER_SECOND,
+      requestedStartTime: startTime,                   // Where playback should start
+      requestedEndTime: endTime,
+      offset,
+      preroll: prerollPts  // Edit list will use this to skip pre-roll frames during playback
     };
   }
   
@@ -246,6 +269,9 @@
     
     log(`Processing...`, { phase: 'convert', percent: 70 });
     
+    // Track preroll for edit list (used for precise clipping)
+    let clipPreroll = 0;
+    
     // Apply time range clipping if specified
     if (options.startTime !== undefined || options.endTime !== undefined) {
       const startTime = options.startTime || 0;
@@ -260,17 +286,23 @@
       
       parser.videoAccessUnits = clipResult.video;
       parser.audioAccessUnits = clipResult.audio;
+      clipPreroll = clipResult.preroll;
       
       // Update PTS arrays to match
       parser.videoPts = clipResult.video.map(au => au.pts);
       parser.videoDts = clipResult.video.map(au => au.dts);
       parser.audioPts = clipResult.audio.map(au => au.pts);
       
-      log(`Clipped: ${clipResult.actualStartTime.toFixed(2)}s - ${clipResult.actualEndTime.toFixed(2)}s (${clipResult.video.length} video, ${clipResult.audio.length} audio frames)`, { phase: 'convert', percent: 80 });
+      const prerollMs = (clipPreroll / 90).toFixed(0);
+      const endTimeStr = clipResult.requestedEndTime === Infinity ? 'end' : clipResult.requestedEndTime.toFixed(2) + 's';
+      const clipDuration = clipResult.requestedEndTime === Infinity 
+        ? (clipResult.actualEndTime - clipResult.requestedStartTime).toFixed(2)
+        : (clipResult.requestedEndTime - clipResult.requestedStartTime).toFixed(2);
+      log(`Clipped: ${clipResult.requestedStartTime.toFixed(2)}s - ${endTimeStr} (${clipDuration}s, ${prerollMs}ms preroll)`, { phase: 'convert', percent: 80 });
     }
     
     log(`Building MP4...`, { phase: 'convert', percent: 85 });
-    const muxer = new MP4Muxer(parser);
+    const muxer = new MP4Muxer(parser, { preroll: clipPreroll });
     const { width, height } = muxer.getVideoDimensions();
     log(`Dimensions: ${width}x${height}`);
     
@@ -720,7 +752,7 @@
   toMp4.isMpegTs = isMpegTs;
   toMp4.isFmp4 = isFmp4;
   toMp4.isStandardMp4 = isStandardMp4;
-  toMp4.version = '1.0.6';
+  toMp4.version = '1.0.7';
 
   return toMp4;
 });

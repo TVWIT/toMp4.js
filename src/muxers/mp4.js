@@ -149,13 +149,16 @@ export function parseSPS(sps) {
 export class MP4Muxer {
   /**
    * @param {TSParser} parser - Parser with video/audio access units
+   * @param {Object} [options] - Muxer options
+   * @param {number} [options.preroll=0] - Pre-roll time in 90kHz ticks (for edit list)
    */
-  constructor(parser) {
+  constructor(parser, options = {}) {
     this.parser = parser;
     this.videoTimescale = 90000;
     this.audioTimescale = parser.audioSampleRate || 48000;
     this.audioSampleDuration = 1024;
     this.videoDimensions = null;
+    this.preroll = options.preroll || 0;  // Pre-roll for precise clipping
   }
   
   getVideoDimensions() {
@@ -265,7 +268,7 @@ export class MP4Muxer {
     const data = new Uint8Array(96);
     const view = new DataView(data.buffer);
     view.setUint32(8, this.videoTimescale);
-    view.setUint32(12, this.calculateVideoDuration());
+    view.setUint32(12, this.calculatePlaybackDuration());  // Use playback duration for movie header
     view.setUint32(16, 0x00010000);
     view.setUint16(20, 0x0100);
     view.setUint32(32, 0x00010000);
@@ -283,6 +286,15 @@ export class MP4Muxer {
     return Math.round(lastDts - firstDts + avgDuration);
   }
   
+  /**
+   * Calculate playback duration (total duration minus pre-roll)
+   * This is what the player should report as the video length
+   */
+  calculatePlaybackDuration() {
+    const totalDuration = this.calculateVideoDuration();
+    return this.preroll > 0 ? Math.max(0, totalDuration - this.preroll) : totalDuration;
+  }
+  
   buildVideoTrak() {
     const edts = this.buildVideoEdts();
     if (edts) {
@@ -297,18 +309,25 @@ export class MP4Muxer {
     const firstAU = this.parser.videoAccessUnits[0];
     const firstVideoPts = firstAU.pts;
     
-    if (firstVideoPts === 0) return null;
+    // Use preroll for precise clipping, or firstVideoPts for timestamp normalization
+    const mediaTime = this.preroll > 0 ? this.preroll : firstVideoPts;
     
-    const duration = this.calculateVideoDuration();
-    const mediaTime = firstVideoPts;
+    // If no offset needed, skip edit list
+    if (mediaTime === 0) return null;
+    
+    // Calculate playback duration (total duration minus pre-roll)
+    const totalDuration = this.calculateVideoDuration();
+    const playbackDuration = this.preroll > 0 
+      ? Math.max(0, totalDuration - this.preroll)
+      : totalDuration;
     
     const elstData = new Uint8Array(16);
     const view = new DataView(elstData.buffer);
-    view.setUint32(0, 1);
-    view.setUint32(4, duration);
-    view.setInt32(8, mediaTime);
-    view.setUint16(12, 1);
-    view.setUint16(14, 0);
+    view.setUint32(0, 1);                    // entry_count
+    view.setUint32(4, playbackDuration);     // segment_duration (what player reports)
+    view.setInt32(8, mediaTime);             // media_time (where to start in media)
+    view.setUint16(12, 1);                   // media_rate_integer
+    view.setUint16(14, 0);                   // media_rate_fraction
     
     const elst = createFullBox('elst', 0, 0, elstData);
     return createBox('edts', elst);
@@ -319,7 +338,7 @@ export class MP4Muxer {
     const data = new Uint8Array(80);
     const view = new DataView(data.buffer);
     view.setUint32(8, 256);
-    view.setUint32(16, this.calculateVideoDuration());
+    view.setUint32(16, this.calculatePlaybackDuration());  // Use playback duration for track header
     view.setUint16(32, 0);
     view.setUint32(36, 0x00010000);
     view.setUint32(52, 0x00010000);
