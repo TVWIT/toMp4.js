@@ -51,14 +51,14 @@ function clipAccessUnits(videoAUs, audioAUs, startTime, endTime) {
   const PTS_PER_SECOND = 90000;
   const startPts = startTime * PTS_PER_SECOND;
   const endPts = endTime * PTS_PER_SECOND;
-  
+
   // Find keyframe at or before startTime (needed for decoding)
   let keyframeIdx = 0;
   for (let i = 0; i < videoAUs.length; i++) {
     if (videoAUs[i].pts > startPts) break;
     if (isKeyframe(videoAUs[i])) keyframeIdx = i;
   }
-  
+
   // Find first frame at or after endTime
   let endIdx = videoAUs.length;
   for (let i = keyframeIdx; i < videoAUs.length; i++) {
@@ -67,10 +67,10 @@ function clipAccessUnits(videoAUs, audioAUs, startTime, endTime) {
       break;
     }
   }
-  
+
   // Clip video starting from keyframe (for proper decoding)
   const clippedVideo = videoAUs.slice(keyframeIdx, endIdx);
-  
+
   if (clippedVideo.length === 0) {
     return {
       video: [],
@@ -81,35 +81,35 @@ function clipAccessUnits(videoAUs, audioAUs, startTime, endTime) {
       preroll: 0
     };
   }
-  
+
   // Get PTS of keyframe and requested start
   const keyframePts = clippedVideo[0].pts;
   const lastFramePts = clippedVideo[clippedVideo.length - 1].pts;
-  
+
   // Pre-roll: time between keyframe and requested start
   // This is the time the decoder needs to process but player shouldn't display
   const prerollPts = Math.max(0, startPts - keyframePts);
-  
+
   // Clip audio to the REQUESTED time range (not from keyframe)
   // Audio doesn't need keyframe pre-roll
   const audioStartPts = startPts;
   const audioEndPts = Math.min(endPts, lastFramePts + 90000); // Include audio slightly past last video
   const clippedAudio = audioAUs.filter(au => au.pts >= audioStartPts && au.pts < audioEndPts);
-  
+
   // Normalize video timestamps so keyframe starts at 0
   const offset = keyframePts;
   for (const au of clippedVideo) {
     au.pts -= offset;
     au.dts -= offset;
   }
-  
+
   // Normalize audio timestamps so it starts at 0 (matching video playback start after preroll)
   // Audio doesn't have preroll, so it should start at PTS 0 to sync with video after edit list
   const audioOffset = audioStartPts;  // Use requested start, not keyframe
   for (const au of clippedAudio) {
     au.pts -= audioOffset;
   }
-  
+
   return {
     video: clippedVideo,
     audio: clippedAudio,
@@ -144,9 +144,9 @@ export function analyzeTsData(tsData) {
   const parser = new TSParser();
   parser.parse(tsData);
   parser.finalize();
-  
+
   const PTS_PER_SECOND = 90000;
-  
+
   // Find keyframes and their timestamps
   const keyframes = [];
   for (let i = 0; i < parser.videoAccessUnits.length; i++) {
@@ -157,15 +157,15 @@ export function analyzeTsData(tsData) {
       });
     }
   }
-  
+
   // Calculate duration
-  const videoDuration = parser.videoPts.length > 0 
+  const videoDuration = parser.videoPts.length > 0
     ? (Math.max(...parser.videoPts) - Math.min(...parser.videoPts)) / PTS_PER_SECOND
     : 0;
   const audioDuration = parser.audioPts.length > 0
     ? (Math.max(...parser.audioPts) - Math.min(...parser.audioPts)) / PTS_PER_SECOND
     : 0;
-  
+
   return {
     duration: Math.max(videoDuration, audioDuration),
     videoFrames: parser.videoAccessUnits.length,
@@ -180,17 +180,17 @@ export function analyzeTsData(tsData) {
 }
 
 export function convertTsToMp4(tsData, options = {}) {
-  const log = options.onProgress || (() => {});
-  
+  const log = options.onProgress || (() => { });
+
   log(`Parsing...`, { phase: 'convert', percent: 52 });
   const parser = new TSParser();
   parser.parse(tsData);
   parser.finalize();
-  
+
   const debug = parser.debug;
   const videoInfo = getCodecInfo(parser.videoStreamType);
   const audioInfo = getCodecInfo(parser.audioStreamType);
-  
+
   // Log parsing results
   log(`Parsed ${debug.packets} TS packets`, { phase: 'convert', percent: 55 });
   log(`PAT: ${debug.patFound ? '✓' : '✗'}, PMT: ${debug.pmtFound ? '✓' : '✗'}`);
@@ -199,16 +199,16 @@ export function convertTsToMp4(tsData, options = {}) {
   if (parser.audioSampleRate) audioDetails.push(`${parser.audioSampleRate}Hz`);
   if (parser.audioChannels) audioDetails.push(`${parser.audioChannels}ch`);
   log(`Audio: ${parser.audioPid ? `PID ${parser.audioPid}` : 'none'} → ${audioInfo.name}${audioDetails.length ? ` (${audioDetails.join(', ')})` : ''}`);
-  
+
   // Check for structural issues first
   if (!debug.patFound) {
     throw new Error('Invalid MPEG-TS: No PAT (Program Association Table) found. File may be corrupted or not MPEG-TS format.');
   }
-  
+
   if (!debug.pmtFound) {
     throw new Error('Invalid MPEG-TS: No PMT (Program Map Table) found. File may be corrupted or missing stream info.');
   }
-  
+
   // Check for unsupported video codec BEFORE we report frame counts
   if (parser.videoStreamType && !videoInfo.supported) {
     throw new Error(
@@ -217,7 +217,7 @@ export function convertTsToMp4(tsData, options = {}) {
       `Your file needs to be transcoded to H.264 first.`
     );
   }
-  
+
   // Check for unsupported audio codec
   if (parser.audioStreamType && !audioInfo.supported) {
     throw new Error(
@@ -226,7 +226,7 @@ export function convertTsToMp4(tsData, options = {}) {
       `Your file needs to be transcoded to AAC first.`
     );
   }
-  
+
   // Check if we found any supported video
   if (!parser.videoPid) {
     throw new Error(
@@ -234,61 +234,61 @@ export function convertTsToMp4(tsData, options = {}) {
       'This library supports: H.264/AVC, H.265/HEVC'
     );
   }
-  
+
   log(`Frames: ${parser.videoAccessUnits.length} video, ${parser.audioAccessUnits.length} audio`, { phase: 'convert', percent: 60 });
   if (debug.audioPesStarts) {
     log(`Audio: ${debug.audioPesStarts} PES starts → ${debug.audioPesCount || 0} processed → ${debug.audioFramesInPes || 0} ADTS frames${debug.audioSkipped ? ` (${debug.audioSkipped} skipped)` : ''}`);
   }
-  
+
   if (parser.videoAccessUnits.length === 0) {
     throw new Error('Video stream found but no frames could be extracted. File may be corrupted.');
   }
-  
+
   // Report timestamp normalization
   if (debug.timestampNormalized) {
     const offsetMs = (debug.timestampOffset / 90).toFixed(1);
     log(`Timestamps normalized: -${offsetMs}ms offset`);
   }
-  
+
   log(`Processing...`, { phase: 'convert', percent: 70 });
-  
+
   // Track preroll for edit list (used for precise clipping)
   let clipPreroll = 0;
-  
+
   // Apply time range clipping if specified
   if (options.startTime !== undefined || options.endTime !== undefined) {
     const startTime = options.startTime || 0;
     const endTime = options.endTime !== undefined ? options.endTime : Infinity;
-    
+
     const clipResult = clipAccessUnits(
       parser.videoAccessUnits,
       parser.audioAccessUnits,
       startTime,
       endTime
     );
-    
+
     parser.videoAccessUnits = clipResult.video;
     parser.audioAccessUnits = clipResult.audio;
     clipPreroll = clipResult.preroll;
-    
+
     // Update PTS arrays to match
     parser.videoPts = clipResult.video.map(au => au.pts);
     parser.videoDts = clipResult.video.map(au => au.dts);
     parser.audioPts = clipResult.audio.map(au => au.pts);
-    
+
     const prerollMs = (clipPreroll / 90).toFixed(0);
     const endTimeStr = clipResult.requestedEndTime === Infinity ? 'end' : clipResult.requestedEndTime.toFixed(2) + 's';
-    const clipDuration = clipResult.requestedEndTime === Infinity 
+    const clipDuration = clipResult.requestedEndTime === Infinity
       ? (clipResult.actualEndTime - clipResult.requestedStartTime).toFixed(2)
       : (clipResult.requestedEndTime - clipResult.requestedStartTime).toFixed(2);
     log(`Clipped: ${clipResult.requestedStartTime.toFixed(2)}s - ${endTimeStr} (${clipDuration}s, ${prerollMs}ms preroll)`, { phase: 'convert', percent: 80 });
   }
-  
+
   log(`Building MP4...`, { phase: 'convert', percent: 85 });
   const muxer = new MP4Muxer(parser, { preroll: clipPreroll });
   const { width, height } = muxer.getVideoDimensions();
   log(`Dimensions: ${width}x${height}`);
-  
+
   const result = muxer.build();
   log(`Complete`, { phase: 'convert', percent: 100 });
   return result;

@@ -69,7 +69,7 @@ export class TSParser {
     this.videoHeight = null;
     this.debug = { packets: 0, patFound: false, pmtFound: false };
   }
-  
+
   /**
    * Parse MPEG-TS data
    * @param {Uint8Array} data - MPEG-TS data
@@ -79,7 +79,7 @@ export class TSParser {
     // Find first sync byte
     while (offset < data.byteLength && data[offset] !== TS_SYNC_BYTE) offset++;
     if (offset > 0) this.debug.skippedBytes = offset;
-    
+
     // Parse all packets
     while (offset + TS_PACKET_SIZE <= data.byteLength) {
       if (data[offset] !== TS_SYNC_BYTE) {
@@ -94,7 +94,7 @@ export class TSParser {
       offset += TS_PACKET_SIZE;
     }
   }
-  
+
   parsePacket(packet) {
     const pid = ((packet[1] & 0x1F) << 8) | packet[2];
     const payloadStart = (packet[1] & 0x40) !== 0;
@@ -107,23 +107,23 @@ export class TSParser {
     }
     if (adaptationField === 2) return;
     if (payloadOffset >= packet.length) return;
-    
+
     const payload = packet.subarray(payloadOffset);
     if (payload.length === 0) return;
-    
+
     if (pid === PAT_PID) this.parsePAT(payload);
     else if (pid === this.pmtPid) this.parsePMT(payload);
     else if (pid === this.videoPid) this.collectPES(payload, payloadStart, 'video');
     else if (pid === this.audioPid) this.collectPES(payload, payloadStart, 'audio');
   }
-  
+
   parsePAT(payload) {
     if (payload.length < 12) return;
     let offset = payload[0] + 1;
     if (offset + 8 > payload.length) return;
-    
+
     offset += 8;
-    
+
     while (offset + 4 <= payload.length - 4) {
       const programNum = (payload[offset] << 8) | payload[offset + 1];
       const pmtPid = ((payload[offset + 2] & 0x1F) << 8) | payload[offset + 3];
@@ -135,29 +135,29 @@ export class TSParser {
       offset += 4;
     }
   }
-  
+
   parsePMT(payload) {
     if (payload.length < 16) return;
     let offset = payload[0] + 1;
     if (offset + 12 > payload.length) return;
-    
+
     offset++;
     const sectionLength = ((payload[offset] & 0x0F) << 8) | payload[offset + 1];
     offset += 2;
     offset += 5;
     offset += 2;
-    
+
     if (offset + 2 > payload.length) return;
     const programInfoLength = ((payload[offset] & 0x0F) << 8) | payload[offset + 1];
     offset += 2 + programInfoLength;
-    
+
     const sectionEnd = Math.min(payload.length - 4, 1 + payload[0] + 3 + sectionLength - 4);
-    
+
     while (offset + 5 <= sectionEnd) {
       const streamType = payload[offset];
       const elementaryPid = ((payload[offset + 1] & 0x1F) << 8) | payload[offset + 2];
       const esInfoLength = ((payload[offset + 3] & 0x0F) << 8) | payload[offset + 4];
-      
+
       if (!this.videoPid && (streamType === 0x01 || streamType === 0x02 || streamType === 0x1B || streamType === 0x24)) {
         this.videoPid = elementaryPid;
         this.videoStreamType = streamType;
@@ -167,11 +167,11 @@ export class TSParser {
         this.audioPid = elementaryPid;
         this.audioStreamType = streamType;
       }
-      
+
       offset += 5 + esInfoLength;
     }
   }
-  
+
   collectPES(payload, isStart, type) {
     const buffer = type === 'video' ? this.videoPesBuffer : this.audioPesBuffer;
     if (isStart) {
@@ -181,7 +181,7 @@ export class TSParser {
     }
     buffer.push(payload.slice());
   }
-  
+
   processPES(pesData, type) {
     if (pesData.length < 9) return;
     if (pesData[0] !== 0 || pesData[1] !== 0 || pesData[2] !== 1) return;
@@ -194,7 +194,7 @@ export class TSParser {
     if (type === 'video') this.processVideoPayload(payload, pts, dts);
     else this.processAudioPayload(payload, pts);
   }
-  
+
   parsePTS(data, offset) {
     return ((data[offset] & 0x0E) << 29) |
       ((data[offset + 1]) << 22) |
@@ -202,7 +202,7 @@ export class TSParser {
       ((data[offset + 3]) << 7) |
       ((data[offset + 4] & 0xFE) >> 1);
   }
-  
+
   processVideoPayload(payload, pts, dts) {
     const nalUnits = this.extractNALUnits(payload);
     if (nalUnits.length > 0 && pts !== null) {
@@ -211,7 +211,7 @@ export class TSParser {
       this.videoDts.push(dts !== null ? dts : pts);
     }
   }
-  
+
   extractNALUnits(data) {
     const nalUnits = [];
     let i = 0;
@@ -223,8 +223,8 @@ export class TSParser {
         if (startCodeLen > 0) {
           let end = i + startCodeLen;
           while (end < data.length - 2) {
-            if (data[end] === 0 && data[end + 1] === 0 && 
-                (data[end + 2] === 1 || (data[end + 2] === 0 && end + 3 < data.length && data[end + 3] === 1))) break;
+            if (data[end] === 0 && data[end + 1] === 0 &&
+              (data[end + 2] === 1 || (data[end + 2] === 0 && end + 3 < data.length && data[end + 3] === 1))) break;
             end++;
           }
           if (end >= data.length - 2) end = data.length;
@@ -238,13 +238,13 @@ export class TSParser {
     }
     return nalUnits;
   }
-  
+
   processAudioPayload(payload, pts) {
     const frames = this.extractADTSFrames(payload);
-    
+
     this.debug.audioPesCount = (this.debug.audioPesCount || 0) + 1;
     this.debug.audioFramesInPes = (this.debug.audioFramesInPes || 0) + frames.length;
-    
+
     if (pts !== null) {
       this.lastAudioPts = pts;
     } else if (this.lastAudioPts !== null) {
@@ -253,10 +253,10 @@ export class TSParser {
       this.debug.audioSkipped = (this.debug.audioSkipped || 0) + frames.length;
       return;
     }
-    
+
     const sampleRate = this.audioSampleRate || 48000;
     const ptsIncrement = Math.round(1024 * 90000 / sampleRate);
-    
+
     for (const frame of frames) {
       this.audioAccessUnits.push({ data: frame.data, pts });
       this.audioPts.push(pts);
@@ -264,13 +264,13 @@ export class TSParser {
       this.lastAudioPts = pts;
     }
   }
-  
+
   extractADTSFrames(data) {
     const SAMPLE_RATES = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350];
-    
+
     const frames = [];
     let i = 0;
-    
+
     if (this.adtsPartial && this.adtsPartial.length > 0) {
       const combined = new Uint8Array(this.adtsPartial.length + data.length);
       combined.set(this.adtsPartial);
@@ -278,12 +278,12 @@ export class TSParser {
       data = combined;
       this.adtsPartial = null;
     }
-    
+
     while (i < data.length - 7) {
       if (data[i] === 0xFF && (data[i + 1] & 0xF0) === 0xF0) {
         const protectionAbsent = data[i + 1] & 0x01;
         const frameLength = ((data[i + 3] & 0x03) << 11) | (data[i + 4] << 3) | ((data[i + 5] & 0xE0) >> 5);
-        
+
         if (!this.audioSampleRate && frameLength > 0) {
           const samplingFreqIndex = ((data[i + 2] & 0x3C) >> 2);
           const channelConfig = ((data[i + 2] & 0x01) << 2) | ((data[i + 3] & 0xC0) >> 6);
@@ -292,7 +292,7 @@ export class TSParser {
             this.audioChannels = channelConfig;
           }
         }
-        
+
         if (frameLength > 0) {
           if (i + frameLength <= data.length) {
             const headerSize = protectionAbsent ? 7 : 9;
@@ -309,7 +309,7 @@ export class TSParser {
     }
     return frames;
   }
-  
+
   concatenateBuffers(buffers) {
     const totalLength = buffers.reduce((sum, b) => sum + b.length, 0);
     const result = new Uint8Array(totalLength);
@@ -317,29 +317,29 @@ export class TSParser {
     for (const buf of buffers) { result.set(buf, offset); offset += buf.length; }
     return result;
   }
-  
+
   /**
    * Finalize parsing - process remaining buffers and normalize timestamps
    */
   finalize() {
     if (this.videoPesBuffer.length > 0) this.processPES(this.concatenateBuffers(this.videoPesBuffer), 'video');
     if (this.audioPesBuffer.length > 0) this.processPES(this.concatenateBuffers(this.audioPesBuffer), 'audio');
-    
+
     this.normalizeTimestamps();
   }
-  
+
   normalizeTimestamps() {
     let minPts = Infinity;
-    
+
     if (this.videoPts.length > 0) {
       minPts = Math.min(minPts, Math.min(...this.videoPts));
     }
     if (this.audioPts.length > 0) {
       minPts = Math.min(minPts, Math.min(...this.audioPts));
     }
-    
+
     if (minPts === Infinity || minPts === 0) return;
-    
+
     for (let i = 0; i < this.videoPts.length; i++) {
       this.videoPts[i] -= minPts;
     }
@@ -349,7 +349,7 @@ export class TSParser {
     for (let i = 0; i < this.audioPts.length; i++) {
       this.audioPts[i] -= minPts;
     }
-    
+
     for (const au of this.videoAccessUnits) {
       au.pts -= minPts;
       au.dts -= minPts;
@@ -357,7 +357,7 @@ export class TSParser {
     for (const au of this.audioAccessUnits) {
       au.pts -= minPts;
     }
-    
+
     this.debug.timestampOffset = minPts;
     this.debug.timestampNormalized = true;
   }

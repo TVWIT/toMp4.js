@@ -42,7 +42,7 @@ const MAX_TAIL_SIZE = 2 * 1024 * 1024; // 2MB for moov at end
 async function fetchWithTimeout(url, options = {}) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
-  
+
   try {
     const response = await fetch(url, {
       ...options,
@@ -79,10 +79,10 @@ async function fetchFileSize(url) {
 // ============================================================================
 
 function wrapADTS(aacData, sampleRate, channels) {
-  const sampleRateIndex = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 
-                           22050, 16000, 12000, 11025, 8000, 7350].indexOf(sampleRate);
+  const sampleRateIndex = [96000, 88200, 64000, 48000, 44100, 32000, 24000,
+    22050, 16000, 12000, 11025, 8000, 7350].indexOf(sampleRate);
   const frameLength = aacData.length + 7;
-  
+
   const adts = new Uint8Array(7 + aacData.length);
   adts[0] = 0xFF;
   adts[1] = 0xF1;
@@ -92,7 +92,7 @@ function wrapADTS(aacData, sampleRate, channels) {
   adts[5] = ((frameLength & 0x07) << 5) | 0x1F;
   adts[6] = 0xFC;
   adts.set(aacData, 7);
-  
+
   return adts;
 }
 
@@ -117,12 +117,12 @@ export class RemoteMp4 {
     await instance._init();
     return instance;
   }
-  
+
   constructor(url, options = {}) {
     this.url = url;
     this.segmentDuration = options.segmentDuration || DEFAULT_SEGMENT_DURATION;
-    this.onProgress = options.onProgress || (() => {});
-    
+    this.onProgress = options.onProgress || (() => { });
+
     // Populated by _init()
     this.fileSize = 0;
     this.moov = null;
@@ -131,7 +131,7 @@ export class RemoteMp4 {
     this.videoSamples = [];
     this.audioSamples = [];
     this.segments = [];
-    
+
     // Computed properties
     this.duration = 0;
     this.width = 0;
@@ -139,22 +139,23 @@ export class RemoteMp4 {
     this.hasAudio = false;
     this.hasBframes = false;
   }
-  
+
   async _init() {
     this.onProgress('Fetching metadata...');
-    
+
     // Get file size
     this.fileSize = await fetchFileSize(this.url);
-    
+
+
     // Find and fetch moov box
     this.moov = await this._findMoov();
-    
+
     // Parse tracks using shared parser
     let trackOffset = 8;
     while (trackOffset < this.moov.length) {
       const trak = findBox(this.moov, 'trak', trackOffset);
       if (!trak) break;
-      
+
       const track = analyzeTrack(this.moov, trak.offset, trak.size);
       if (track) {
         if (track.type === 'vide' && !this.videoTrack) {
@@ -172,29 +173,54 @@ export class RemoteMp4 {
       }
       trackOffset = trak.offset + trak.size;
     }
-    
+
     if (!this.videoTrack) {
       throw new Error('No video track found');
     }
-    
+
+    // Filter out samples that are beyond the file size (truncated file support)
+    const originalVideoCount = this.videoSamples.length;
+    this.videoSamples = this.videoSamples.filter(s => (s.offset + s.size) <= this.fileSize);
+
+    if (this.videoSamples.length < originalVideoCount) {
+      console.warn(`⚠️ File is truncated! content-length=${this.fileSize}. Keeping ${this.videoSamples.length}/${originalVideoCount} video samples.`);
+
+      // Update duration based on last available sample
+      if (this.videoSamples.length > 0) {
+        const lastSample = this.videoSamples[this.videoSamples.length - 1];
+        // sample.time and duration are in seconds (from mp4 parser)
+        this.duration = lastSample.time + (lastSample.duration || 0);
+      } else {
+        this.duration = 0;
+      }
+    }
+
+    // Filter audio samples
+    const originalAudioCount = this.audioSamples.length;
+    this.audioSamples = this.audioSamples.filter(s => (s.offset + s.size) <= this.fileSize);
+
+    if (this.audioSamples.length < originalAudioCount) {
+      console.warn(`⚠️ Audio truncated. Keeping ${this.audioSamples.length}/${originalAudioCount} samples.`);
+    }
+
     // Build segments
     this.segments = buildSegments(this.videoSamples, this.segmentDuration);
-    
+
     this.onProgress(`Parsed: ${this.duration.toFixed(1)}s, ${this.segments.length} segments`);
   }
-  
+
   async _findMoov() {
     const headerSize = Math.min(MAX_HEADER_SIZE, this.fileSize);
     const header = await fetchRange(this.url, 0, headerSize - 1);
-    
+
     // Scan header for boxes
     let offset = 0;
     while (offset < header.length - 8) {
       const size = readUint32(header, offset);
       const type = boxType(header, offset + 4);
-      
+
       if (size === 0 || size > this.fileSize) break;
-      
+
       if (type === 'moov') {
         // moov in header - fetch complete if needed
         if (offset + size <= header.length) {
@@ -202,7 +228,7 @@ export class RemoteMp4 {
         }
         return fetchRange(this.url, offset, offset + size - 1);
       }
-      
+
       if (type === 'mdat') {
         // mdat at start means moov is at end
         const moovOffset = offset + size;
@@ -214,39 +240,39 @@ export class RemoteMp4 {
             if (moov.size <= tail.length) {
               return tail.slice(moov.offset, moov.offset + moov.size);
             }
-            return fetchRange(this.url, moovOffset + moov.offset, 
-                            moovOffset + moov.offset + moov.size - 1);
+            return fetchRange(this.url, moovOffset + moov.offset,
+              moovOffset + moov.offset + moov.size - 1);
           }
         }
         break;
       }
-      
+
       offset += size;
     }
-    
+
     // Try end of file as fallback
     const tailSize = Math.min(MAX_TAIL_SIZE, this.fileSize);
     const tail = await fetchRange(this.url, this.fileSize - tailSize, this.fileSize - 1);
     const moov = findBox(tail, 'moov');
-    
+
     if (moov) {
       const moovStart = this.fileSize - tailSize + moov.offset;
       return fetchRange(this.url, moovStart, moovStart + moov.size - 1);
     }
-    
+
     // Check for fragmented MP4
     const moof = findBox(header, 'moof');
     if (moof) {
       throw new Error('Fragmented MP4 (fMP4) not supported');
     }
-    
+
     throw new Error('Could not find moov box');
   }
-  
+
   // ===========================================================================
   // Public API
   // ===========================================================================
-  
+
   /**
    * Get source information
    */
@@ -265,7 +291,7 @@ export class RemoteMp4 {
       keyframeCount: this.videoTrack?.stss?.length || 0
     };
   }
-  
+
   /**
    * Get segment definitions
    */
@@ -277,7 +303,7 @@ export class RemoteMp4 {
       duration: s.duration
     }));
   }
-  
+
   /**
    * Generate HLS master playlist
    */
@@ -285,17 +311,17 @@ export class RemoteMp4 {
     const bandwidth = Math.round(
       (this.videoSamples.reduce((s, v) => s + v.size, 0) / this.duration) * 8
     );
-    
-    const resolution = this.width && this.height ? 
+
+    const resolution = this.width && this.height ?
       `,RESOLUTION=${this.width}x${this.height}` : '';
-    
+
     return `#EXTM3U
 #EXT-X-VERSION:3
 #EXT-X-STREAM-INF:BANDWIDTH=${bandwidth}${resolution}
 ${baseUrl}playlist.m3u8
 `;
   }
-  
+
   /**
    * Generate HLS media playlist
    */
@@ -306,15 +332,15 @@ ${baseUrl}playlist.m3u8
 #EXT-X-MEDIA-SEQUENCE:0
 #EXT-X-PLAYLIST-TYPE:VOD
 `;
-    
+
     for (const segment of this.segments) {
       playlist += `#EXTINF:${segment.duration.toFixed(6)},\n${baseUrl}segment${segment.index}.ts\n`;
     }
-    
+
     playlist += '#EXT-X-ENDLIST\n';
     return playlist;
   }
-  
+
   /**
    * Get a segment as MPEG-TS data
    * @param {number} index - Segment index
@@ -325,17 +351,17 @@ ${baseUrl}playlist.m3u8
     if (!segment) {
       throw new Error(`Segment ${index} not found`);
     }
-    
+
     // Get samples for this segment
     const videoSamples = this.videoSamples.slice(segment.videoStart, segment.videoEnd);
     const audioSamples = this.audioSamples.filter(
       s => s.time >= segment.startTime && s.time < segment.endTime
     );
-    
+
     // Fetch video data using byte ranges
     const videoRanges = calculateByteRanges(videoSamples);
     const videoData = await this._fetchRanges(videoRanges);
-    
+
     // Map video sample data
     const parsedVideoSamples = videoSamples.map(sample => {
       const range = videoRanges.find(r => r.samples.includes(sample));
@@ -346,13 +372,13 @@ ${baseUrl}playlist.m3u8
         data: data.slice(relOffset, relOffset + sample.size)
       };
     });
-    
+
     // Fetch and map audio data
     let parsedAudioSamples = [];
     if (audioSamples.length > 0) {
       const audioRanges = calculateByteRanges(audioSamples);
       const audioData = await this._fetchRanges(audioRanges);
-      
+
       parsedAudioSamples = audioSamples.map(sample => {
         const range = audioRanges.find(r => r.samples.includes(sample));
         const data = audioData.get(range);
@@ -363,53 +389,53 @@ ${baseUrl}playlist.m3u8
         };
       });
     }
-    
+
     // Build MPEG-TS segment
     return this._buildTsSegment(parsedVideoSamples, parsedAudioSamples);
   }
-  
+
   async _fetchRanges(ranges) {
     const results = new Map();
-    
+
     // Fetch ranges in parallel
     await Promise.all(ranges.map(async range => {
       const data = await fetchRange(this.url, range.start, range.end - 1);
       results.set(range, data);
     }));
-    
+
     return results;
   }
-  
+
   _buildTsSegment(videoSamples, audioSamples) {
     const muxer = new TSMuxer();
-    
+
     if (this.videoTrack?.codecConfig) {
       muxer.setSpsPps(
         this.videoTrack.codecConfig.sps[0],
         this.videoTrack.codecConfig.pps[0]
       );
     }
-    
+
     muxer.setHasAudio(audioSamples.length > 0);
-    
+
     const PTS_PER_SECOND = 90000;
     const sampleRate = this.audioTrack?.audioConfig?.sampleRate || 44100;
     const channels = this.audioTrack?.audioConfig?.channels || 2;
-    
+
     // Add audio samples
     for (const sample of audioSamples) {
       const dts90k = Math.round((sample.dts ?? sample.time) * PTS_PER_SECOND);
       const adts = wrapADTS(sample.data, sampleRate, channels);
       muxer.addAudioSample(adts, dts90k);
     }
-    
+
     // Add video samples with PTS and DTS
     for (const sample of videoSamples) {
       const pts90k = Math.round((sample.pts ?? sample.time) * PTS_PER_SECOND);
       const dts90k = Math.round((sample.dts ?? sample.time) * PTS_PER_SECOND);
       muxer.addVideoSample(sample.data, sample.isKeyframe, pts90k, dts90k);
     }
-    
+
     muxer.flush();
     return muxer.build();
   }
