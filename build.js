@@ -16,7 +16,8 @@ const tsToMp4 = readFileSync(`${__dirname}/src/ts-to-mp4.js`, 'utf-8')
   .replace(/export (function|default)/g, '$1')
   .replace(/^export /gm, '');
 
-const fmp4ToMp4 = readFileSync(`${__dirname}/src/fmp4-to-mp4.js`, 'utf-8')
+const fmp4ToMp4 = readFileSync(`${__dirname}/src/fmp4/converter.js`, 'utf-8')
+  .replace(/import .*?from .*?;?\n/g, '')  // Remove imports
   .replace(/export (function|default)/g, '$1')
   .replace(/^export /gm, '');
 
@@ -116,7 +117,7 @@ const bundle = `/**
 
 try {
   mkdirSync(`${__dirname}/dist`, { recursive: true });
-} catch (e) {}
+} catch (e) { }
 
 writeFileSync(`${__dirname}/dist/tomp4.js`, bundle);
 

@@ -48,11 +48,35 @@ const mp4 = await toMp4('https://example.com/stream.m3u8', {
   endTime: 30
 })
 
-// clip existing data (snaps to keyframes)
+// clip existing data (frame-accurate using edit lists)
 const mp4 = await toMp4(data, {
   startTime: 5,
   endTime: 15
 })
+```
+
+### stitch multiple fMP4 segments
+
+```js
+// live stream saved as 4-second fMP4 chunks (each with init+data)
+const segments = [segment1, segment2, segment3] // Uint8Array[]
+const mp4 = toMp4.stitchFmp4(segments)
+mp4.download('combined-stream.mp4')
+
+// or with separate init segment
+const mp4 = toMp4.stitchFmp4(dataSegments, { init: initSegment })
+```
+
+### stitch multiple MPEG-TS segments
+
+```js
+// combine .ts segments into a single MP4
+const segments = [segment1, segment2, segment3] // Uint8Array[]
+const mp4 = toMp4.stitchTs(segments)
+mp4.download('combined.mp4')
+
+// or concatenate into a single continuous TS stream
+const tsData = toMp4.concatTs(segments)
 ```
 
 ### analyze without converting

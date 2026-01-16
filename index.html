@@ -4,8 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>toMp4.js - Convert MPEG-TS, fMP4 & HLS to MP4</title>
-  <meta name="description" content="Convert and clip MPEG-TS, fMP4, and HLS streams to MP4 files. Time-based clipping, keyframe analysis. Pure JavaScript, zero dependencies.">
-  <meta name="keywords" content="mp4, mpeg-ts, fmp4, hls, video converter, javascript, transmux, streaming, h264, h265, aac, clip, trim, cut">
+  <meta name="description" content="Convert, clip, and stitch MPEG-TS, fMP4, and HLS streams to MP4 files. Frame-accurate clipping, segment stitching. Pure JavaScript, zero dependencies.">
+  <meta name="keywords" content="mp4, mpeg-ts, fmp4, hls, video converter, javascript, transmux, streaming, h264, h265, aac, clip, trim, cut, stitch, concatenate">
   <meta name="author" content="Invintus Media">
   <meta name="robots" content="index, follow">
   <link rel="canonical" href="https://tvwit.github.io/toMp4.js/">
@@ -14,7 +14,7 @@
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://tvwit.github.io/toMp4.js/">
   <meta property="og:title" content="toMp4.js - Convert MPEG-TS, fMP4 & HLS to MP4">
-  <meta property="og:description" content="Convert and clip MPEG-TS, fMP4, and HLS streams to MP4. Time-based clipping, keyframe analysis. Pure JavaScript, zero dependencies.">
+  <meta property="og:description" content="Convert, clip, and stitch MPEG-TS, fMP4, and HLS streams to MP4. Frame-accurate clipping, segment stitching. Pure JavaScript, zero dependencies.">
   <meta property="og:image" content="https://tvwit.github.io/toMp4.js/og-image.png">
   <meta property="og:site_name" content="toMp4.js">
   
@@ -22,7 +22,7 @@
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:url" content="https://tvwit.github.io/toMp4.js/">
   <meta name="twitter:title" content="toMp4.js - Convert MPEG-TS, fMP4 & HLS to MP4">
-  <meta name="twitter:description" content="Convert and clip MPEG-TS, fMP4, and HLS streams to MP4. Time-based clipping, keyframe analysis. Pure JavaScript, zero dependencies.">
+  <meta name="twitter:description" content="Convert, clip, and stitch MPEG-TS, fMP4, and HLS streams to MP4. Frame-accurate clipping, segment stitching. Pure JavaScript, zero dependencies.">
   <meta name="twitter:image" content="https://tvwit.github.io/toMp4.js/og-image.png">
   
   <!-- Theme -->
@@ -708,6 +708,7 @@
         <button class="tab active" data-tab="basic">Basic</button>
         <button class="tab" data-tab="hls">HLS</button>
         <button class="tab" data-tab="clip">Clipping</button>
+        <button class="tab" data-tab="stitch">Stitching</button>
         <button class="tab" data-tab="progress">Progress</button>
         <button class="tab" data-tab="analyze">Analyze</button>
         <button class="tab" data-tab="result">Result</button>
@@ -748,13 +749,27 @@ console.<span class="function">log</span>(hls.qualities)  <span class="comment">
   endTime: <span class="string">30</span>
 })
 
-<span class="comment">// Clip existing data (snaps to keyframes)</span>
+<span class="comment">// Clip existing data (frame-accurate using edit lists)</span>
 <span class="keyword">const</span> mp4 = <span class="keyword">await</span> <span class="function">toMp4</span>(data, {
   startTime: <span class="string">5</span>,
   endTime: <span class="string">15</span>
 })</code></pre>
         </div>
-        
+
+        <div class="tab-content" data-tab="stitch">
+          <pre><code><span class="comment">// Stitch multiple MPEG-TS segments into a single MP4</span>
+<span class="keyword">const</span> segments = [segment1, segment2, segment3]  <span class="comment">// Uint8Array[]</span>
+<span class="keyword">const</span> mp4 = toMp4.<span class="function">stitchTs</span>(segments)
+mp4.<span class="function">download</span>(<span class="string">'combined.mp4'</span>)
+
+<span class="comment">// Concatenate into a single continuous TS stream</span>
+<span class="keyword">const</span> tsData = toMp4.<span class="function">concatTs</span>(segments)
+
+<span class="comment">// Stitch fMP4 segments (e.g., from DASH or live streams)</span>
+<span class="keyword">const</span> mp4 = toMp4.<span class="function">stitchFmp4</span>(fmp4Segments)
+<span class="keyword">const</span> mp4 = toMp4.<span class="function">stitchFmp4</span>(dataSegments, { init: initSegment })</code></pre>
+        </div>
+
         <div class="tab-content" data-tab="progress">
           <pre><code><span class="keyword">const</span> mp4 = <span class="keyword">await</span> <span class="function">toMp4</span>(url, {
   <span class="function">onProgress</span>: (msg, info) => {

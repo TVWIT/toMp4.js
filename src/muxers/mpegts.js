@@ -81,6 +81,60 @@ export class TSMuxer {
   }
   
   /**
+   * Add H.264 video sample from NAL units (Annex B format)
+   * Used when re-muxing parsed MPEG-TS data
+   * @param {Uint8Array[]} nalUnits - Array of NAL units (without start codes)
+   * @param {boolean} isKey - Is this a keyframe
+   * @param {number} pts90k - Presentation timestamp in 90kHz ticks
+   * @param {number} [dts90k] - Decode timestamp in 90kHz ticks (defaults to pts90k)
+   */
+  addVideoNalUnits(nalUnits, isKey, pts90k, dts90k = pts90k) {
+    const parts = [];
+
+    // Add AUD (Access Unit Delimiter) at start of each access unit
+    parts.push(new Uint8Array([0, 0, 0, 1, 0x09, 0xF0]));
+
+    // If keyframe, prepend SPS/PPS
+    if (isKey && this.sps && this.pps) {
+      parts.push(new Uint8Array([0, 0, 0, 1]));
+      parts.push(this.sps);
+      parts.push(new Uint8Array([0, 0, 0, 1]));
+      parts.push(this.pps);
+    }
+
+    // Add each NAL unit with start code
+    for (const nalUnit of nalUnits) {
+      // Skip SPS/PPS from source if we're adding our own
+      const nalType = nalUnit[0] & 0x1F;
+      if (isKey && this.sps && this.pps && (nalType === 7 || nalType === 8)) {
+        continue;
+      }
+      parts.push(new Uint8Array([0, 0, 0, 1]));
+      parts.push(nalUnit);
+    }
+
+    // Build PES packet
+    const annexB = concat(parts);
+    const pes = this._buildVideoPES(annexB, pts90k, dts90k);
+
+    // Write PAT/PMT before keyframes
+    if (isKey) {
+      this.packets.push(this._buildPAT());
+      this.packets.push(this._buildPMT());
+    }
+
+    // Write pending audio with PTS <= this video frame
+    while (this.pendingAudio.length > 0 && this.pendingAudio[0].pts <= pts90k) {
+      const audio = this.pendingAudio.shift();
+      const audioPes = this._buildAudioPES(audio.data, audio.pts);
+      this._packetizePES(audioPes, 0x102, false, audio.pts, 'audio');
+    }
+
+    // Packetize video PES into 188-byte TS packets
+    this._packetizePES(pes, 0x101, isKey, dts90k, 'video');
+  }
+
+  /**
    * Add H.264 video sample from WebCodecs encoder (AVCC format with length prefixes)
    * @param {Uint8Array} avccData - AVCC-formatted NAL units
    * @param {boolean} isKey - Is this a keyframe

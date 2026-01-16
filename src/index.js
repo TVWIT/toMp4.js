@@ -31,7 +31,8 @@
  */
 
 import { convertTsToMp4, analyzeTsData } from './ts-to-mp4.js';
-import { convertFmp4ToMp4 } from './fmp4-to-mp4.js';
+import { convertFmp4ToMp4, stitchFmp4 } from './fmp4/index.js';
+import { stitchTs, concatTs } from './mpegts/index.js';
 import { parseHls, downloadHls, isHlsUrl, HlsStream, HlsVariant } from './hls.js';
 import { transcode, isWebCodecsSupported } from './transcode.js';
 import { TSMuxer } from './muxers/mpegts.js';
@@ -148,7 +149,7 @@ function isStandardMp4(data) {
   while (offset + 8 <= data.length) {
     const size = view.getUint32(offset);
     if (size < 8) break;
-    const boxType = String.fromCharCode(data[offset+4], data[offset+5], data[offset+6], data[offset+7]);
+    const boxType = String.fromCharCode(data[offset + 4], data[offset + 5], data[offset + 6], data[offset + 7]);
     if (boxType === 'moov') hasMoov = true;
     if (boxType === 'moof') hasMoof = true;
     offset += size;
@@ -170,7 +171,7 @@ function detectFormat(data) {
 function convertData(data, options = {}) {
   const uint8 = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
   const format = detectFormat(uint8);
-  
+
   switch (format) {
     case 'mpegts':
       return convertTsToMp4(uint8, options);
@@ -217,15 +218,15 @@ function convertData(data, options = {}) {
 async function toMp4(input, options = {}) {
   let data;
   let filename = options.filename || 'video.mp4';
-  const log = options.onProgress || (() => {});
-  
+  const log = options.onProgress || (() => { });
+
   // Handle HlsStream object
   if (input instanceof HlsStream) {
     if (!options.filename) {
       const urlPart = (input.masterUrl || '').split('/').pop()?.split('?')[0];
       filename = urlPart ? urlPart.replace('.m3u8', '.mp4') : 'video.mp4';
     }
-    data = await downloadHls(input, { 
+    data = await downloadHls(input, {
       ...options,
       quality: options.quality || 'highest'
     });
@@ -250,7 +251,7 @@ async function toMp4(input, options = {}) {
         throw new Error(`Failed to fetch: ${response.status} ${response.statusText}`);
       }
       data = new Uint8Array(await response.arrayBuffer());
-      
+
       if (!options.filename) {
         const urlFilename = input.split('/').pop()?.split('?')[0];
         if (urlFilename) {
@@ -274,7 +275,7 @@ async function toMp4(input, options = {}) {
   else {
     throw new Error('Input must be a URL string, HlsStream, Uint8Array, ArrayBuffer, or Blob');
   }
-  
+
   // Adjust clip times if we downloaded HLS with a time range
   // The downloaded segments have been normalized to start at 0,
   // so we need to adjust the requested clip times accordingly
@@ -289,17 +290,20 @@ async function toMp4(input, options = {}) {
     }
     log(`Adjusted clip: ${convertOptions.startTime?.toFixed(2) || 0}s - ${convertOptions.endTime?.toFixed(2) || '∞'}s (offset: -${segmentStart.toFixed(2)}s)`);
   }
-  
+
   // Convert
   log('Converting...');
   const mp4Data = convertData(data, convertOptions);
-  
+
   return new Mp4Result(mp4Data, filename);
 }
 
 // Attach utilities to main function
 toMp4.fromTs = (data, options) => new Mp4Result(convertTsToMp4(data instanceof ArrayBuffer ? new Uint8Array(data) : data, options));
 toMp4.fromFmp4 = (data) => new Mp4Result(convertFmp4ToMp4(data instanceof ArrayBuffer ? new Uint8Array(data) : data));
+toMp4.stitchFmp4 = (segments, options) => new Mp4Result(stitchFmp4(segments, options));
+toMp4.stitchTs = (segments) => new Mp4Result(stitchTs(segments));
+toMp4.concatTs = concatTs;
 toMp4.detectFormat = detectFormat;
 toMp4.isMpegTs = isMpegTs;
 toMp4.isFmp4 = isFmp4;
@@ -328,15 +332,18 @@ toMp4.RemoteMp4 = RemoteMp4;
 toMp4.version = '1.0.10';
 
 // Export
-export { 
-  toMp4, 
-  Mp4Result, 
-  convertTsToMp4, 
-  convertFmp4ToMp4, 
+export {
+  toMp4,
+  Mp4Result,
+  convertTsToMp4,
+  convertFmp4ToMp4,
+  stitchFmp4,
+  stitchTs,
+  concatTs,
   analyzeTsData,
-  detectFormat, 
-  isMpegTs, 
-  isFmp4, 
+  detectFormat,
+  isMpegTs,
+  isFmp4,
   isStandardMp4,
   parseHls,
   downloadHls,
