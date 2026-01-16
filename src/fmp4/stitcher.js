@@ -47,12 +47,17 @@ function createBox(type, ...payloads) {
 // Fragment Parsing
 // ============================================
 
-function parseTfhd(tfhdData) {
+function parseTfhd(tfhdData, trexDefaults = {}) {
   const view = new DataView(tfhdData.buffer, tfhdData.byteOffset, tfhdData.byteLength);
   const flags = (tfhdData[9] << 16) | (tfhdData[10] << 8) | tfhdData[11];
   const trackId = view.getUint32(12);
   let offset = 16;
-  let baseDataOffset = 0, defaultSampleDuration = 0, defaultSampleSize = 0, defaultSampleFlags = 0;
+
+  // Start with trex defaults, override with tfhd values if present
+  let baseDataOffset = 0;
+  let defaultSampleDuration = trexDefaults.defaultSampleDuration || 0;
+  let defaultSampleSize = trexDefaults.defaultSampleSize || 0;
+  let defaultSampleFlags = trexDefaults.defaultSampleFlags || 0;
 
   if (flags & 0x1) { baseDataOffset = Number(view.getBigUint64(offset)); offset += 8; }
   if (flags & 0x2) offset += 4; // sample description index
@@ -61,6 +66,43 @@ function parseTfhd(tfhdData) {
   if (flags & 0x20) { defaultSampleFlags = view.getUint32(offset); offset += 4; }
 
   return { trackId, flags, baseDataOffset, defaultSampleDuration, defaultSampleSize, defaultSampleFlags };
+}
+
+/**
+ * Parse trex (Track Extends) box from mvex
+ * This contains default sample values for all fragments
+ */
+function parseTrex(trexData) {
+  const view = new DataView(trexData.buffer, trexData.byteOffset, trexData.byteLength);
+  // Skip box header (8) + version/flags (4)
+  const trackId = view.getUint32(12);
+  const defaultSampleDescriptionIndex = view.getUint32(16);
+  const defaultSampleDuration = view.getUint32(20);
+  const defaultSampleSize = view.getUint32(24);
+  const defaultSampleFlags = view.getUint32(28);
+
+  return { trackId, defaultSampleDescriptionIndex, defaultSampleDuration, defaultSampleSize, defaultSampleFlags };
+}
+
+/**
+ * Extract trex defaults from moov's mvex box
+ */
+function extractTrexDefaults(moovBox) {
+  const defaults = new Map(); // trackId -> { defaultSampleDuration, ... }
+  const moovChildren = parseChildBoxes(moovBox);
+  const mvex = findBox(moovChildren, 'mvex');
+
+  if (mvex) {
+    const mvexChildren = parseChildBoxes(mvex);
+    for (const child of mvexChildren) {
+      if (child.type === 'trex') {
+        const trex = parseTrex(child.data);
+        defaults.set(trex.trackId, trex);
+      }
+    }
+  }
+
+  return defaults;
 }
 
 function parseTfdt(tfdtData) {
@@ -433,6 +475,7 @@ export function stitchFmp4(segments, options = {}) {
   let ftyp = null;
   let moov = null;
   let originalTrackIds = [];
+  let trexDefaults = new Map(); // trackId -> default sample values from trex
 
   // Process init segment if provided separately
   if (initData) {
@@ -443,6 +486,7 @@ export function stitchFmp4(segments, options = {}) {
       throw new Error('stitchFmp4: Init segment missing ftyp or moov');
     }
     originalTrackIds = extractTrackIds(moov);
+    trexDefaults = extractTrexDefaults(moov);
   }
 
   // Process each segment
@@ -461,6 +505,7 @@ export function stitchFmp4(segments, options = {}) {
     if (!moov && segMoov) {
       moov = segMoov;
       originalTrackIds = extractTrackIds(moov);
+      trexDefaults = extractTrexDefaults(moov);
     }
 
     // Process fragment boxes (moof + mdat pairs)
@@ -492,7 +537,12 @@ export function stitchFmp4(segments, options = {}) {
             const tfdtBox = findBox(trafChildren, 'tfdt');
 
             if (tfhdBox && trunBox) {
-              const tfhd = parseTfhd(tfhdBox.data);
+              // Get trackId first to look up trex defaults
+              const tfhdView = new DataView(tfhdBox.data.buffer, tfhdBox.data.byteOffset, tfhdBox.data.byteLength);
+              const trackId = tfhdView.getUint32(12);
+              const trackTrexDefaults = trexDefaults.get(trackId) || {};
+
+              const tfhd = parseTfhd(tfhdBox.data, trackTrexDefaults);
               const { samples, dataOffset } = parseTrun(trunBox.data, tfhd);
 
               if (!tracks.has(tfhd.trackId)) {
