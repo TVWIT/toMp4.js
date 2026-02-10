@@ -331,7 +331,7 @@ toMp4.TSParser = TSParser;
 toMp4.RemoteMp4 = RemoteMp4;
 
 // Version (injected at build time for dist, read from package.json for ESM)
-toMp4.version = '1.1.1';
+toMp4.version = '1.2.0';
 
 // Export
 export {
