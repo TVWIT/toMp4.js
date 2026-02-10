@@ -126,8 +126,10 @@ function parsePlaylistText(text, baseUrl) {
   const lines = text.split('\n').map(l => l.trim());
   const variants = [];
   const segments = [];
+  let initSegmentUrl = null;
   let currentDuration = 0;
   let runningTime = 0;
+  const isMaster = lines.some(l => l.startsWith('#EXT-X-STREAM-INF'));
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -151,6 +153,15 @@ function parsePlaylistText(text, baseUrl) {
       }
     }
 
+    // Parse CMAF init segment for fMP4 playlists
+    // Example: #EXT-X-MAP:URI="init.m4s"
+    if (line.startsWith('#EXT-X-MAP:')) {
+      const match = line.match(/URI="([^"]+)"/);
+      if (match?.[1]) {
+        initSegmentUrl = toAbsoluteUrl(match[1], baseUrl);
+      }
+    }
+
     // Parse segment duration
     if (line.startsWith('#EXTINF:')) {
       const match = line.match(/#EXTINF:([\d.]+)/);
@@ -160,7 +171,7 @@ function parsePlaylistText(text, baseUrl) {
     // Parse media playlist segments
     if (line && !line.startsWith('#')) {
       // It's a segment URL
-      if (!lines.some(l => l.startsWith('#EXT-X-STREAM-INF'))) {
+      if (!isMaster) {
         segments.push(new HlsSegment(
           toAbsoluteUrl(line, baseUrl),
           currentDuration,
@@ -172,7 +183,7 @@ function parsePlaylistText(text, baseUrl) {
     }
   }
 
-  return { variants, segments };
+  return { variants, segments, initSegmentUrl };
 }
 
 /**
@@ -194,7 +205,7 @@ async function parseHls(url, options = {}) {
   }
   
   const text = await response.text();
-  const { variants, segments } = parsePlaylistText(text, url);
+  const { variants, segments, initSegmentUrl } = parsePlaylistText(text, url);
 
   if (variants.length > 0) {
     // Master playlist
@@ -203,7 +214,9 @@ async function parseHls(url, options = {}) {
   } else if (segments.length > 0) {
     // Media playlist (no variants)
     log(`Found ${segments.length} segments`);
-    return new HlsStream(url, [], segments);
+    const stream = new HlsStream(url, [], segments);
+    stream.initSegmentUrl = initSegmentUrl;
+    return stream;
   } else {
     throw new Error('Invalid HLS playlist: no variants or segments found');
   }
@@ -237,6 +250,7 @@ async function downloadHls(source, options = {}) {
 
   // Get segments
   let segments = stream.segments;
+  let initSegmentUrl = stream.initSegmentUrl || null;
   
   // If master playlist, fetch the selected variant's media playlist
   if (stream.isMaster && stream.selected) {
@@ -249,8 +263,9 @@ async function downloadHls(source, options = {}) {
     }
     
     const mediaText = await mediaResponse.text();
-    const { segments: mediaSegments } = parsePlaylistText(mediaText, variant.url);
+    const { segments: mediaSegments, initSegmentUrl: mediaInit } = parsePlaylistText(mediaText, variant.url);
     segments = mediaSegments;
+    initSegmentUrl = mediaInit || null;
   }
 
   if (!segments || segments.length === 0) {
@@ -300,10 +315,26 @@ async function downloadHls(source, options = {}) {
     })
   );
 
+  // If CMAF/fMP4 playlist includes an init segment, prepend it so the combined
+  // buffer starts with ftyp+moov and conversion can succeed.
+  let initBytes = null;
+  if (initSegmentUrl) {
+    log('Downloading init segment...', { phase: 'download', percent: 0 });
+    const initResp = await fetch(initSegmentUrl);
+    if (!initResp.ok) {
+      throw new Error(`Init segment failed: ${initResp.status}`);
+    }
+    initBytes = new Uint8Array(await initResp.arrayBuffer());
+  }
+
   // Combine into single buffer
-  const totalSize = buffers.reduce((sum, buf) => sum + buf.length, 0);
+  const totalSize = buffers.reduce((sum, buf) => sum + buf.length, 0) + (initBytes ? initBytes.length : 0);
   const combined = new Uint8Array(totalSize);
   let offset = 0;
+  if (initBytes) {
+    combined.set(initBytes, offset);
+    offset += initBytes.length;
+  }
   for (const buf of buffers) {
     combined.set(buf, offset);
     offset += buf.length;
@@ -343,4 +374,3 @@ export {
   parsePlaylistText,
   toAbsoluteUrl
 };
-

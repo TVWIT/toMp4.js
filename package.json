@@ -20,7 +20,9 @@
   "scripts": {
     "build": "node build.js",
     "dev": "npx serve . -p 3000",
-    "test": "npm run test:clip && npm run test:mp4",
+    "test": "npm run test:hls-map && npm run test:thumbnail && npm run test:clip && npm run test:mp4",
+    "test:hls-map": "node tests/hls-map.test.js",
+    "test:thumbnail": "node tests/thumbnail.node.test.js",
     "test:clip": "node tests/clip.test.js",
     "test:mp4": "node tests/mp4-parser.test.js",
     "test:all": "npm run test",

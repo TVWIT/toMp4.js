@@ -40,6 +40,7 @@ import { MP4Muxer } from './muxers/mp4.js';
 import { TSParser } from './parsers/mpegts.js';
 import { MP4Parser } from './parsers/mp4.js';
 import { RemoteMp4 } from './remote/index.js';
+import { thumbnail, ImageResult } from './thumbnail.js';
 
 /**
  * Result object returned by toMp4()
@@ -320,6 +321,7 @@ toMp4.analyze = analyzeTsData;
 // Transcoding (browser-only, uses WebCodecs)
 toMp4.transcode = transcode;
 toMp4.isWebCodecsSupported = isWebCodecsSupported;
+toMp4.thumbnail = thumbnail;
 
 // Parsers
 toMp4.MP4Parser = MP4Parser;
@@ -353,6 +355,9 @@ export {
   // Transcoding (browser-only)
   transcode,
   isWebCodecsSupported,
+  // Thumbnails (browser-only)
+  thumbnail,
+  ImageResult,
   // Muxers
   TSMuxer,
   MP4Muxer,
