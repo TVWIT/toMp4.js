@@ -1,6 +1,6 @@
 {
   "name": "@invintusmedia/tomp4",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Convert MPEG-TS, fMP4, and HLS streams to MP4 with clipping support - pure JavaScript, zero dependencies",
   "main": "src/index.js",
   "module": "src/index.js",
@@ -24,6 +24,7 @@
     "test:hls-map": "node tests/hls-map.test.js",
     "test:thumbnail": "node tests/thumbnail.node.test.js",
     "test:clip": "node tests/clip.test.js",
+    "test:fmp4-clip": "node tests/fmp4-clip.test.js",
     "test:mp4": "node tests/mp4-parser.test.js",
     "test:all": "npm run test",
     "release": "npm test && npm run build && git add -A && git commit -m \"v$(node -p \"require('./package.json').version\")\" && git tag v$(node -p \"require('./package.json').version\") && git push && git push --tags",

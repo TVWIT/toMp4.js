@@ -85,22 +85,29 @@ export function createBox(type, ...payloads) {
  * Parse tfhd (track fragment header) box
  * Extracts track ID and default sample values
  * @param {Uint8Array} tfhdData - tfhd box data
- * @returns {{trackId: number, defaultSampleDuration: number, defaultSampleSize: number, defaultSampleFlags: number}}
+ * @param {{defaultSampleDuration?: number, defaultSampleSize?: number, defaultSampleFlags?: number}} defaults - Defaults (e.g. from trex)
+ * @returns {{trackId: number, flags: number, baseDataOffset: number, defaultSampleDuration: number, defaultSampleSize: number, defaultSampleFlags: number}}
  */
-export function parseTfhd(tfhdData) {
+export function parseTfhd(tfhdData, defaults = {}) {
     const view = new DataView(tfhdData.buffer, tfhdData.byteOffset, tfhdData.byteLength);
     const flags = (tfhdData[9] << 16) | (tfhdData[10] << 8) | tfhdData[11];
     const trackId = view.getUint32(12);
     let offset = 16;
-    let defaultSampleDuration = 0, defaultSampleSize = 0, defaultSampleFlags = 0;
+    let baseDataOffset = 0;
+    let defaultSampleDuration = defaults.defaultSampleDuration || 0;
+    let defaultSampleSize = defaults.defaultSampleSize || 0;
+    let defaultSampleFlags = defaults.defaultSampleFlags || 0;
 
-    if (flags & 0x1) offset += 8;  // base-data-offset
+    if (flags & 0x1) {
+        baseDataOffset = Number(view.getBigUint64(offset));
+        offset += 8;
+    }
     if (flags & 0x2) offset += 4;  // sample-description-index
     if (flags & 0x8) { defaultSampleDuration = view.getUint32(offset); offset += 4; }
     if (flags & 0x10) { defaultSampleSize = view.getUint32(offset); offset += 4; }
     if (flags & 0x20) { defaultSampleFlags = view.getUint32(offset); offset += 4; }
 
-    return { trackId, defaultSampleDuration, defaultSampleSize, defaultSampleFlags };
+    return { trackId, flags, baseDataOffset, defaultSampleDuration, defaultSampleSize, defaultSampleFlags };
 }
 
 /**

@@ -142,8 +142,8 @@ export async function thumbnail(input, options = {}) {
     });
     mp4Cleanup = () => mp4.revokeURL();
     mediaUrl = mp4.toURL();
-    // The clip is normalized to start at 0
-    localSeek = 0.1;
+    // The clip is normalized to requested start at t=0.
+    localSeek = 0;
   };
 
   const isSegmentsObject =

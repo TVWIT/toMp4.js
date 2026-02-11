@@ -177,7 +177,7 @@ function convertData(data, options = {}) {
     case 'mpegts':
       return convertTsToMp4(uint8, options);
     case 'fmp4':
-      return convertFmp4ToMp4(uint8);
+      return convertFmp4ToMp4(uint8, options);
     case 'mp4':
       return uint8;
     default:
@@ -301,7 +301,7 @@ async function toMp4(input, options = {}) {
 
 // Attach utilities to main function
 toMp4.fromTs = (data, options) => new Mp4Result(convertTsToMp4(data instanceof ArrayBuffer ? new Uint8Array(data) : data, options));
-toMp4.fromFmp4 = (data) => new Mp4Result(convertFmp4ToMp4(data instanceof ArrayBuffer ? new Uint8Array(data) : data));
+toMp4.fromFmp4 = (data, options = {}) => new Mp4Result(convertFmp4ToMp4(data instanceof ArrayBuffer ? new Uint8Array(data) : data, options));
 toMp4.stitchFmp4 = (segments, options) => new Mp4Result(stitchFmp4(segments, options));
 toMp4.stitchTs = (segments) => new Mp4Result(stitchTs(segments));
 toMp4.concatTs = concatTs;
@@ -331,7 +331,7 @@ toMp4.TSParser = TSParser;
 toMp4.RemoteMp4 = RemoteMp4;
 
 // Version (injected at build time for dist, read from package.json for ESM)
-toMp4.version = '1.2.0';
+toMp4.version = '1.2.1';
 
 // Export
 export {
