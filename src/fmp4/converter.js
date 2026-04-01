@@ -257,23 +257,52 @@ function applyClipToTracks(tracks, options = {}) {
         }
     }
 
+    // First pass: clip video to determine preroll duration
     const clipped = new Map();
-    for (const [trackId, track] of tracks) {
-        if (!track.samples.length) continue;
+    let videoPrerollSec = 0;
 
-        const startTick = Math.round(startSec * track.timescale);
+    if (videoTrackId !== null) {
+        const vTrack = tracks.get(videoTrackId);
+        if (vTrack && vTrack.samples.length) {
+            const startTick = Math.round(startSec * vTrack.timescale);
+            const endTick = Number.isFinite(endSec) ? Math.round(endSec * vTrack.timescale) : Infinity;
+            const clip = clipVideoSamples(vTrack.samples, startTick, endTick);
+
+            if (clip.samples.length) {
+                videoPrerollSec = clip.mediaTime / vTrack.timescale;
+                clipped.set(videoTrackId, {
+                    ...vTrack,
+                    samples: clip.samples,
+                    mediaTime: clip.mediaTime,
+                    playbackDuration: clip.playbackDuration,
+                    chunkOffsets: [],
+                });
+            }
+        }
+    }
+
+    // Second pass: clip non-video tracks, including audio from the video's
+    // decode start (keyframe) so A/V stays in sync without edit lists
+    for (const [trackId, track] of tracks) {
+        if (!track.samples.length || trackId === videoTrackId) continue;
+
+        const adjustedStartSec = Math.max(0, startSec - videoPrerollSec);
+        const startTick = Math.round(adjustedStartSec * track.timescale);
         const endTick = Number.isFinite(endSec) ? Math.round(endSec * track.timescale) : Infinity;
-        const clip = trackId === videoTrackId
-            ? clipVideoSamples(track.samples, startTick, endTick)
-            : clipNonVideoSamples(track.samples, startTick, endTick);
+        const clip = clipNonVideoSamples(track.samples, startTick, endTick);
 
         if (!clip.samples.length) continue;
+
+        // Audio preroll matches video preroll so both tracks share the same timeline
+        const audioPreroll = Math.round(videoPrerollSec * track.timescale);
+        const totalDur = sumSampleDurations(clip.samples);
+        const playbackDuration = Math.max(0, totalDur - audioPreroll);
 
         clipped.set(trackId, {
             ...track,
             samples: clip.samples,
-            mediaTime: clip.mediaTime,
-            playbackDuration: clip.playbackDuration,
+            mediaTime: audioPreroll,
+            playbackDuration,
             chunkOffsets: [],
         });
     }
@@ -718,6 +747,16 @@ function updateStcoOffsets(output, ftypSize, moovSize) {
  * @param {number} [options.endTime] - Clip end time (seconds)
  * @returns {Uint8Array} Standard MP4 data
  */
+// Shared rebuild functions — also used by mp4-clip.js for standard MP4 clipping
+export {
+    applyClipToTracks,
+    rebuildMdatContent,
+    calculateMovieDuration,
+    rebuildTrak,
+    rebuildMvhd,
+    updateStcoOffsets,
+};
+
 export function convertFmp4ToMp4(fmp4Data, options = {}) {
     const boxes = parseBoxes(fmp4Data);
     const ftyp = findBox(boxes, 'ftyp');

@@ -32,6 +32,9 @@
 
 import { convertTsToMp4, analyzeTsData } from './ts-to-mp4.js';
 import { convertFmp4ToMp4, stitchFmp4 } from './fmp4/index.js';
+import { clipMp4 } from './mp4-clip.js';
+import { clipHls, HlsClipResult } from './hls-clip.js';
+import { createInitSegment, createFragment } from './muxers/fmp4.js';
 import { stitchTs, concatTs } from './mpegts/index.js';
 import { parseHls, downloadHls, isHlsUrl, HlsStream, HlsVariant } from './hls.js';
 import { transcode, isWebCodecsSupported } from './transcode.js';
@@ -179,9 +182,13 @@ function convertData(data, options = {}) {
     case 'fmp4':
       return convertFmp4ToMp4(uint8, options);
     case 'mp4':
+      // Clip if time range specified, otherwise pass through
+      if (options.startTime !== undefined || options.endTime !== undefined) {
+        return clipMp4(uint8, options);
+      }
       return uint8;
     default:
-      throw new Error('Unrecognized video format. Expected MPEG-TS or fMP4.');
+      throw new Error('Unrecognized video format. Expected MPEG-TS, fMP4, or MP4.');
   }
 }
 
@@ -302,6 +309,10 @@ async function toMp4(input, options = {}) {
 // Attach utilities to main function
 toMp4.fromTs = (data, options) => new Mp4Result(convertTsToMp4(data instanceof ArrayBuffer ? new Uint8Array(data) : data, options));
 toMp4.fromFmp4 = (data, options = {}) => new Mp4Result(convertFmp4ToMp4(data instanceof ArrayBuffer ? new Uint8Array(data) : data, options));
+toMp4.clipMp4 = (data, options = {}) => new Mp4Result(clipMp4(data instanceof ArrayBuffer ? new Uint8Array(data) : data, options));
+toMp4.clipHls = clipHls;
+toMp4.createInitSegment = createInitSegment;
+toMp4.createFragment = createFragment;
 toMp4.stitchFmp4 = (segments, options) => new Mp4Result(stitchFmp4(segments, options));
 toMp4.stitchTs = (segments) => new Mp4Result(stitchTs(segments));
 toMp4.concatTs = concatTs;
@@ -339,6 +350,11 @@ export {
   Mp4Result,
   convertTsToMp4,
   convertFmp4ToMp4,
+  clipMp4,
+  clipHls,
+  HlsClipResult,
+  createInitSegment,
+  createFragment,
   stitchFmp4,
   stitchTs,
   concatTs,

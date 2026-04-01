@@ -513,19 +513,26 @@ export class MP4Muxer {
     if (this.parser.audioPts.length === 0) return null;
 
     const firstAudioPts = this.parser.audioPts[0];
-
-    // When clipping with preroll, audio is normalized to start at PTS 0
-    // (matching video playback start after edit list), so no edit list needed
-    if (firstAudioPts === 0) return null;
-
-    // For non-clipped content, handle any timestamp offset
-    const mediaTime = Math.round(firstAudioPts * this.audioTimescale / 90000);
     const audioDuration = this.audioSampleSizes.length * this.audioSampleDuration;
+
+    // Determine media_time: when clipping with preroll, audio shares the
+    // same timeline as video (both normalized from keyframe), so the audio
+    // edit list must skip the same preroll to stay in sync.
+    let mediaTime;
+    if (this.preroll > 0) {
+      mediaTime = Math.round(this.preroll * this.audioTimescale / 90000);
+    } else if (firstAudioPts !== 0) {
+      mediaTime = Math.round(firstAudioPts * this.audioTimescale / 90000);
+    } else {
+      return null; // No offset, no preroll — no edit list needed
+    }
+
+    const playbackDuration = Math.max(0, audioDuration - mediaTime);
 
     const elstData = new Uint8Array(16);
     const view = new DataView(elstData.buffer);
     view.setUint32(0, 1);
-    view.setUint32(4, Math.round(audioDuration * this.videoTimescale / this.audioTimescale));
+    view.setUint32(4, Math.round(playbackDuration * this.videoTimescale / this.audioTimescale));
     view.setInt32(8, mediaTime);
     view.setUint16(12, 1);
     view.setUint16(14, 0);

@@ -90,24 +90,23 @@ function clipAccessUnits(videoAUs, audioAUs, startTime, endTime) {
   // This is the time the decoder needs to process but player shouldn't display
   const prerollPts = Math.max(0, startPts - keyframePts);
 
-  // Clip audio to the REQUESTED time range (not from keyframe)
-  // Audio doesn't need keyframe pre-roll
-  const audioStartPts = startPts;
-  const audioEndPts = Math.min(endPts, lastFramePts + 90000); // Include audio slightly past last video
+  // Clip audio from KEYFRAME time (same as video) so A/V stays in sync
+  // even on players that ignore edit lists. The edit list will skip the
+  // audio preroll on compliant players, just like it does for video.
+  const audioStartPts = keyframePts;
+  const audioEndPts = Math.min(endPts, lastFramePts + 90000);
   const clippedAudio = audioAUs.filter(au => au.pts >= audioStartPts && au.pts < audioEndPts);
 
-  // Normalize video timestamps so keyframe starts at 0
+  // Normalize both video and audio to the same base (keyframe PTS)
+  // so they share a common timeline regardless of edit list support
   const offset = keyframePts;
   for (const au of clippedVideo) {
     au.pts -= offset;
     au.dts -= offset;
   }
 
-  // Normalize audio timestamps so it starts at 0 (matching video playback start after preroll)
-  // Audio doesn't have preroll, so it should start at PTS 0 to sync with video after edit list
-  const audioOffset = audioStartPts;  // Use requested start, not keyframe
   for (const au of clippedAudio) {
-    au.pts -= audioOffset;
+    au.pts -= offset;
   }
 
   return {
