@@ -152,14 +152,20 @@ class HlsClipResult {
    * @param {object} opts
    * @param {number} opts.prerollDuration - Seconds to seek past for frame accuracy
    */
-  constructor({ variants, duration, startTime, endTime, prerollDuration }) {
+  constructor({ variants, duration, startTime, endTime, prerollDuration, mediaDuration }) {
     this._variants = variants;
+    /** Requested clip duration in seconds. */
     this.duration = duration;
     this.startTime = startTime;
     this.endTime = endTime;
-    /** Seconds between the keyframe start and the requested startTime.
-     *  The player should set video.currentTime = prerollDuration on load. */
+    /** Seconds from the start of the media to where playback should begin.
+     *  The player should seek here on load: `video.currentTime = clip.prerollDuration` */
     this.prerollDuration = prerollDuration;
+    /** Total media duration including preroll. This is what `video.duration` will report.
+     *  The player should pause when: `video.currentTime >= clip.playbackEnd` */
+    this.mediaDuration = mediaDuration;
+    /** The time at which the player should pause (preroll + requested duration). */
+    this.playbackEnd = prerollDuration + duration;
   }
 
   get variantCount() {
@@ -329,12 +335,17 @@ export async function clipHls(source, options = {}) {
     });
   }
 
+  const mediaDuration = variants.length > 0
+    ? variants[0].segments.reduce((sum, s) => sum + s.duration, 0)
+    : endTime - startTime;
+
   return new HlsClipResult({
     variants,
     duration: endTime - startTime,
     startTime,
     endTime,
     prerollDuration,
+    mediaDuration,
   });
 }
 
