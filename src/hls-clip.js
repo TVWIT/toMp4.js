@@ -114,7 +114,11 @@ function clipSegment(parser, startTime, endTime, options = {}) {
     if (videoAUs[i].pts >= startPts) { targetIdx = i; break; }
   }
 
-  const needsSmartRender = startTime !== undefined && targetIdx > keyframeIdx;
+  // Smart rendering is available but currently disabled for HLS output
+  // because the JS H.264 encoder's CAVLC output has bugs at high resolutions
+  // (works at 288x160 but fails at 1080p). Fall back to keyframe-accurate.
+  // TODO: Fix CAVLC encoding for high-resolution frames to re-enable.
+  const needsSmartRender = false;
 
   let clippedVideo, clippedAudio, startOffset;
 
