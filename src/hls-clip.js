@@ -23,6 +23,7 @@
 import { parseHls, isHlsUrl, parsePlaylistText, toAbsoluteUrl } from './hls.js';
 import { TSParser, getCodecInfo } from './parsers/mpegts.js';
 import { createInitSegment, createFragment } from './muxers/fmp4.js';
+import { smartRender } from './codecs/smart-render.js';
 
 // ── constants ─────────────────────────────────────────────
 
@@ -80,56 +81,83 @@ function remuxToFragment(parser, sequenceNumber, videoBaseTime, audioBaseTime, a
 /**
  * Clip a parsed TS segment at the start and/or end.
  *
- * Starts at the nearest keyframe at or before startTime (required for
- * decoding). No preroll/edit-list — hls.js doesn't read edit lists, so
- * every frame in the fMP4 gets played. The EXTINF duration matches the
- * actual content, which means the clip may start slightly before the
- * requested time (at the keyframe).
+ * Uses smart rendering when clipping at the start: re-encodes the
+ * boundary GOP so the segment starts with a new keyframe at the
+ * exact requested time. No preroll, no edit list, frame-accurate.
+ *
+ * @param {TSParser} parser - Parsed TS segment
+ * @param {number} [startTime] - Start time in seconds (relative to segment)
+ * @param {number} [endTime] - End time in seconds (relative to segment)
+ * @param {object} [options]
+ * @param {number} [options.qp=20] - Encoding quality for smart-rendered frames
  */
-function clipSegment(parser, startTime, endTime) {
+function clipSegment(parser, startTime, endTime, options = {}) {
+  const { qp = 20 } = options;
   const startPts = (startTime !== undefined ? startTime : 0) * PTS_PER_SECOND;
   const endPts = (endTime !== undefined ? endTime : Infinity) * PTS_PER_SECOND;
   const videoAUs = parser.videoAccessUnits;
   const audioAUs = parser.audioAccessUnits;
 
-  // Find keyframe at or before startTime
+  if (videoAUs.length === 0) return null;
+
+  // Check if startTime falls between keyframes (needs smart rendering)
   let keyframeIdx = 0;
   for (let i = 0; i < videoAUs.length; i++) {
     if (videoAUs[i].pts > startPts) break;
     if (isKeyframe(videoAUs[i])) keyframeIdx = i;
   }
 
-  // Find end index
-  let endIdx = videoAUs.length;
+  let targetIdx = keyframeIdx;
   for (let i = keyframeIdx; i < videoAUs.length; i++) {
-    if (videoAUs[i].pts >= endPts) { endIdx = i; break; }
+    if (videoAUs[i].pts >= startPts) { targetIdx = i; break; }
   }
 
-  const clippedVideo = videoAUs.slice(keyframeIdx, endIdx);
+  const needsSmartRender = startTime !== undefined && targetIdx > keyframeIdx;
+
+  let clippedVideo, clippedAudio, startOffset;
+
+  if (needsSmartRender) {
+    // Smart render: re-encode boundary GOP for frame-accurate start
+    const result = smartRender(parser, startTime, { endTime, qp });
+    clippedVideo = result.videoAUs;
+    startOffset = result.videoAUs.length > 0 ? result.videoAUs[0].pts : 0;
+
+    // Clip audio to match smart-rendered video
+    const audioEnd = endPts < Infinity ? Math.min(endPts, videoAUs[videoAUs.length - 1].pts + PTS_PER_SECOND) : Infinity;
+    clippedAudio = audioAUs.filter(au => au.pts >= startOffset && au.pts < audioEnd);
+  } else {
+    // Start is at a keyframe — no smart rendering needed
+    let endIdx = videoAUs.length;
+    for (let i = keyframeIdx; i < videoAUs.length; i++) {
+      if (videoAUs[i].pts >= endPts) { endIdx = i; break; }
+    }
+
+    clippedVideo = videoAUs.slice(keyframeIdx, endIdx);
+    if (clippedVideo.length === 0) return null;
+    startOffset = clippedVideo[0].pts;
+
+    const lastVideoPts = clippedVideo[clippedVideo.length - 1].pts;
+    const audioEndPts = Math.min(endPts, lastVideoPts + PTS_PER_SECOND);
+    clippedAudio = audioAUs.filter(au => au.pts >= startOffset && au.pts < audioEndPts);
+  }
+
   if (clippedVideo.length === 0) return null;
 
-  const keyframePts = clippedVideo[0].pts;
-
-  // Clip audio from keyframe (same start as video for A/V sync)
-  const lastVideoPts = clippedVideo[clippedVideo.length - 1].pts;
-  const audioEndPts = Math.min(endPts, lastVideoPts + PTS_PER_SECOND);
-  const clippedAudio = audioAUs.filter(au => au.pts >= keyframePts && au.pts < audioEndPts);
-
   // Normalize timestamps to start at 0
-  const offset = keyframePts;
-  for (const au of clippedVideo) { au.pts -= offset; au.dts -= offset; }
-  for (const au of clippedAudio) { au.pts -= offset; }
+  for (const au of clippedVideo) { au.pts -= startOffset; au.dts -= startOffset; }
+  for (const au of clippedAudio) { au.pts -= startOffset; }
 
-  // Duration = full content from keyframe (no preroll subtraction)
+  // Duration from actual content
   const duration = clippedVideo.length > 1
     ? clippedVideo[clippedVideo.length - 1].dts - clippedVideo[0].dts +
-      (clippedVideo[1].dts - clippedVideo[0].dts)
+      (clippedVideo.length > 1 ? clippedVideo[1].dts - clippedVideo[0].dts : 3003)
     : 3003;
 
   return {
     videoSamples: clippedVideo,
     audioSamples: clippedAudio,
     duration: duration / PTS_PER_SECOND,
+    smartRendered: needsSmartRender,
   };
 }
 
