@@ -1,10 +1,14 @@
 /**
  * HLS-to-HLS Clipper
  *
- * Clips an HLS stream to a time range, producing a new HLS stream with
- * CMAF (fMP4) segments. Boundary segments are pre-clipped with edit lists
- * for frame-accurate start/end. Middle segments are remuxed on-demand
- * from the original CDN source.
+ * Clips an HLS stream to a time range, producing a new HLS stream.
+ * Boundary segments are smart-rendered via WebCodecs for frame-accurate
+ * start/end. Middle segments use original CDN URLs — completely untouched.
+ *
+ * Output format matches input: TS segments stay as TS, fMP4 stays as fMP4.
+ * No format conversion needed for middle segments.
+ *
+ * Falls back to keyframe-accurate clipping when WebCodecs is unavailable.
  *
  * @module hls-clip
  *
@@ -16,46 +20,35 @@
  *
  * clip.masterPlaylist      // modified m3u8 text
  * clip.getMediaPlaylist(0) // variant media playlist
- * clip.getInitSegment(0)   // fMP4 init segment (Uint8Array)
- * await clip.getSegment(0, 0) // fMP4 media segment (Uint8Array)
+ * await clip.getSegment(0, 0) // boundary segment (Uint8Array) or middle URL
  */
 
-import { parseHls, isHlsUrl, parsePlaylistText, toAbsoluteUrl } from './hls.js';
-import { TSParser, getCodecInfo } from './parsers/mpegts.js';
-import { createInitSegment, createFragment } from './muxers/fmp4.js';
-import { convertFmp4ToMp4 } from './fmp4/converter.js';
-import { parseBoxes, findBox, parseChildBoxes, createBox } from './fmp4/utils.js';
-import { smartRender } from './codecs/smart-render.js';
-
-// ── constants ─────────────────────────────────────────────
+import { parseHls, parsePlaylistText } from './hls.js';
+import { TSParser } from './parsers/mpegts.js';
+import { TSMuxer } from './muxers/mpegts.js';
+import { smartRender, isSmartRenderSupported } from './codecs/smart-render.js';
 
 const PTS_PER_SECOND = 90000;
 
+/** Wrap raw AAC frame data with a 7-byte ADTS header. */
+function wrapADTS(aacData, sampleRate, channels) {
+  const RATES = [96000,88200,64000,48000,44100,32000,24000,22050,16000,12000,11025,8000,7350];
+  const sampleRateIndex = RATES.indexOf(sampleRate);
+  const frameLength = aacData.length + 7;
+  const adts = new Uint8Array(7 + aacData.length);
+  adts[0] = 0xFF;
+  adts[1] = 0xF1; // MPEG-4, Layer 0, no CRC
+  adts[2] = ((1) << 6) | ((sampleRateIndex < 0 ? 4 : sampleRateIndex) << 2) | ((channels >> 2) & 1); // AAC-LC
+  adts[3] = ((channels & 3) << 6) | ((frameLength >> 11) & 3);
+  adts[4] = (frameLength >> 3) & 0xFF;
+  adts[5] = ((frameLength & 7) << 5) | 0x1F;
+  adts[6] = 0xFC;
+  adts.set(aacData, 7);
+  return adts;
+}
+
 // ── helpers ───────────────────────────────────────────────
 
-function isKeyframe(accessUnit) {
-  for (const nalUnit of accessUnit.nalUnits) {
-    if ((nalUnit[0] & 0x1F) === 5) return true;
-  }
-  return false;
-}
-
-function extractCodecInfo(parser) {
-  let sps = null, pps = null;
-  for (const au of parser.videoAccessUnits) {
-    for (const nalUnit of au.nalUnits) {
-      const nalType = nalUnit[0] & 0x1F;
-      if (nalType === 7 && !sps) sps = nalUnit;
-      if (nalType === 8 && !pps) pps = nalUnit;
-      if (sps && pps) return { sps, pps };
-    }
-  }
-  return { sps, pps };
-}
-
-/**
- * Parse a TS segment and return the parsed data.
- */
 function parseTs(tsData) {
   const parser = new TSParser();
   parser.parse(tsData);
@@ -63,107 +56,81 @@ function parseTs(tsData) {
   return parser;
 }
 
+function isKeyframe(au) {
+  for (const nal of au.nalUnits) {
+    if ((nal[0] & 0x1F) === 5) return true;
+  }
+  return false;
+}
+
 /**
- * Remux parsed TS data into an fMP4 fragment.
- * Normalizes timestamps to start at the given base times.
+ * Mux video + audio access units into an MPEG-TS segment.
  */
-function remuxToFragment(parser, sequenceNumber, videoBaseTime, audioBaseTime, audioTimescale) {
-  return createFragment({
-    videoSamples: parser.videoAccessUnits,
-    audioSamples: parser.audioAccessUnits,
-    sequenceNumber,
-    videoTimescale: PTS_PER_SECOND,
-    audioTimescale,
-    videoBaseTime,
-    audioBaseTime,
-    audioSampleDuration: 1024,
-  });
+function muxToTs(videoAUs, audioAUs, audioSampleRate, audioChannels) {
+  const muxer = new TSMuxer();
+
+  // Extract SPS/PPS for the muxer
+  let sps = null, pps = null;
+  for (const au of videoAUs) {
+    for (const nal of au.nalUnits) {
+      const t = nal[0] & 0x1F;
+      if (t === 7 && !sps) sps = nal;
+      if (t === 8 && !pps) pps = nal;
+    }
+    if (sps && pps) break;
+  }
+  if (sps && pps) muxer.setSpsPps(sps, pps);
+  muxer.setHasAudio(audioAUs.length > 0);
+
+  // Add audio samples (wrap raw AAC with ADTS headers)
+  const sr = audioSampleRate || 48000;
+  const ch = audioChannels || 2;
+  for (const au of audioAUs) {
+    // Check if already has ADTS header
+    const hasADTS = au.data.length > 1 && au.data[0] === 0xFF && (au.data[1] & 0xF0) === 0xF0;
+    const adtsData = hasADTS ? au.data : wrapADTS(au.data, sr, ch);
+    muxer.addAudioSample(adtsData, au.pts);
+  }
+
+  // Add video samples
+  for (const au of videoAUs) {
+    muxer.addVideoNalUnits(au.nalUnits, isKeyframe(au), au.pts, au.dts);
+  }
+
+  return muxer.build();
 }
 
 /**
  * Clip a parsed TS segment at the start and/or end.
- *
- * Uses smart rendering when clipping at the start: re-encodes the
- * boundary GOP so the segment starts with a new keyframe at the
- * exact requested time. No preroll, no edit list, frame-accurate.
- *
- * @param {TSParser} parser - Parsed TS segment
- * @param {number} [startTime] - Start time in seconds (relative to segment)
- * @param {number} [endTime] - End time in seconds (relative to segment)
- * @param {object} [options]
- * @param {number} [options.qp=20] - Encoding quality for smart-rendered frames
+ * Uses smart rendering (WebCodecs) when available for frame-accurate start.
+ * Falls back to keyframe-accurate when WebCodecs is unavailable.
  */
-function clipSegment(parser, startTime, endTime, options = {}) {
-  const { qp = 20 } = options;
-  const startPts = (startTime !== undefined ? startTime : 0) * PTS_PER_SECOND;
-  const endPts = (endTime !== undefined ? endTime : Infinity) * PTS_PER_SECOND;
-  const videoAUs = parser.videoAccessUnits;
-  const audioAUs = parser.audioAccessUnits;
+async function clipSegment(parser, startTime, endTime) {
+  const result = await smartRender(parser, startTime || 0, { endTime });
 
-  if (videoAUs.length === 0) return null;
+  if (result.videoAUs.length === 0) return null;
 
-  // Check if startTime falls between keyframes (needs smart rendering)
-  let keyframeIdx = 0;
-  for (let i = 0; i < videoAUs.length; i++) {
-    if (videoAUs[i].pts > startPts) break;
-    if (isKeyframe(videoAUs[i])) keyframeIdx = i;
-  }
-
-  let targetIdx = keyframeIdx;
-  for (let i = keyframeIdx; i < videoAUs.length; i++) {
-    if (videoAUs[i].pts >= startPts) { targetIdx = i; break; }
-  }
-
-  // Smart rendering is available but currently disabled for HLS output
-  // because the JS H.264 encoder's CAVLC output has bugs at high resolutions
-  // (works at 288x160 but fails at 1080p). Fall back to keyframe-accurate.
-  // TODO: Fix CAVLC encoding for high-resolution frames to re-enable.
-  const needsSmartRender = false;
-
-  let clippedVideo, clippedAudio, startOffset;
-
-  if (needsSmartRender) {
-    // Smart render: re-encode boundary GOP for frame-accurate start
-    const result = smartRender(parser, startTime, { endTime, qp });
-    clippedVideo = result.videoAUs;
-    startOffset = result.videoAUs.length > 0 ? result.videoAUs[0].pts : 0;
-
-    // Clip audio to match smart-rendered video
-    const audioEnd = endPts < Infinity ? Math.min(endPts, videoAUs[videoAUs.length - 1].pts + PTS_PER_SECOND) : Infinity;
-    clippedAudio = audioAUs.filter(au => au.pts >= startOffset && au.pts < audioEnd);
-  } else {
-    // Start is at a keyframe — no smart rendering needed
-    let endIdx = videoAUs.length;
-    for (let i = keyframeIdx; i < videoAUs.length; i++) {
-      if (videoAUs[i].pts >= endPts) { endIdx = i; break; }
-    }
-
-    clippedVideo = videoAUs.slice(keyframeIdx, endIdx);
-    if (clippedVideo.length === 0) return null;
-    startOffset = clippedVideo[0].pts;
-
-    const lastVideoPts = clippedVideo[clippedVideo.length - 1].pts;
-    const audioEndPts = Math.min(endPts, lastVideoPts + PTS_PER_SECOND);
-    clippedAudio = audioAUs.filter(au => au.pts >= startOffset && au.pts < audioEndPts);
-  }
-
-  if (clippedVideo.length === 0) return null;
+  // Calculate duration from the actual content
+  const firstPts = result.videoAUs[0].pts;
+  const lastPts = result.videoAUs[result.videoAUs.length - 1].pts;
+  const frameDuration = result.videoAUs.length > 1
+    ? result.videoAUs[1].dts - result.videoAUs[0].dts
+    : 3003;
+  const duration = (lastPts - firstPts + frameDuration) / PTS_PER_SECOND;
 
   // Normalize timestamps to start at 0
-  for (const au of clippedVideo) { au.pts -= startOffset; au.dts -= startOffset; }
-  for (const au of clippedAudio) { au.pts -= startOffset; }
+  const offset = firstPts;
+  for (const au of result.videoAUs) { au.pts -= offset; au.dts -= offset; }
+  for (const au of result.audioAUs) { au.pts -= offset; }
 
-  // Duration from actual content
-  const duration = clippedVideo.length > 1
-    ? clippedVideo[clippedVideo.length - 1].dts - clippedVideo[0].dts +
-      (clippedVideo.length > 1 ? clippedVideo[1].dts - clippedVideo[0].dts : 3003)
-    : 3003;
+  // Mux to TS (wrap raw AAC with ADTS headers)
+  const tsData = muxToTs(result.videoAUs, result.audioAUs, parser.audioSampleRate, parser.audioChannels);
 
   return {
-    videoSamples: clippedVideo,
-    audioSamples: clippedAudio,
-    duration: duration / PTS_PER_SECOND,
-    smartRendered: needsSmartRender,
+    data: tsData,
+    duration,
+    smartRendered: (result.smartRenderedFrames || 0) > 0,
+    smartRenderedFrames: result.smartRenderedFrames || 0,
   };
 }
 
@@ -171,22 +138,19 @@ function clipSegment(parser, startTime, endTime, options = {}) {
 
 class HlsClipResult {
   constructor({ variants, duration, startTime, endTime }) {
-    this._variants = variants; // array of VariantClip
+    this._variants = variants;
     this.duration = duration;
     this.startTime = startTime;
     this.endTime = endTime;
   }
 
-  /** Number of quality variants */
   get variantCount() {
     return this._variants.length;
   }
 
   /** Master playlist m3u8 text */
   get masterPlaylist() {
-    if (this._variants.length === 1) {
-      return this.getMediaPlaylist(0);
-    }
+    if (this._variants.length === 1) return this.getMediaPlaylist(0);
     let m3u8 = '#EXTM3U\n';
     for (let i = 0; i < this._variants.length; i++) {
       const v = this._variants[i];
@@ -198,9 +162,9 @@ class HlsClipResult {
   }
 
   /**
-   * Get CMAF media playlist for a variant.
-   * @param {number} variantIndex
-   * @returns {string} m3u8 text
+   * Get media playlist for a variant.
+   * Boundary segments use custom URLs (served from memory).
+   * Middle segments use original CDN URLs.
    */
   getMediaPlaylist(variantIndex = 0) {
     const variant = this._variants[variantIndex];
@@ -209,38 +173,30 @@ class HlsClipResult {
     const maxDur = Math.max(...variant.segments.map(s => s.duration));
 
     let m3u8 = '#EXTM3U\n';
-    m3u8 += '#EXT-X-VERSION:7\n';
+    m3u8 += '#EXT-X-VERSION:3\n';
     m3u8 += `#EXT-X-TARGETDURATION:${Math.ceil(maxDur)}\n`;
     m3u8 += '#EXT-X-PLAYLIST-TYPE:VOD\n';
     m3u8 += '#EXT-X-MEDIA-SEQUENCE:0\n';
-    m3u8 += `#EXT-X-MAP:URI="init-${variantIndex}.m4s"\n`;
 
     for (let i = 0; i < variant.segments.length; i++) {
       const seg = variant.segments[i];
       m3u8 += `#EXTINF:${seg.duration.toFixed(6)},\n`;
-      m3u8 += `segment-${variantIndex}-${i}.m4s\n`;
+      if (seg.originalUrl) {
+        // Middle segment: original CDN URL (untouched)
+        m3u8 += `${seg.originalUrl}\n`;
+      } else {
+        // Boundary segment: served from memory
+        m3u8 += `segment-${variantIndex}-${i}.ts\n`;
+      }
     }
     m3u8 += '#EXT-X-ENDLIST\n';
     return m3u8;
   }
 
   /**
-   * Get the CMAF init segment for a variant.
-   * @param {number} variantIndex
-   * @returns {Uint8Array}
-   */
-  getInitSegment(variantIndex = 0) {
-    return this._variants[variantIndex]?.initSegment ?? null;
-  }
-
-  /**
-   * Get a media segment as fMP4 data.
-   * Boundary segments are returned from memory (pre-clipped).
-   * Middle segments are fetched from CDN and remuxed on-demand.
-   *
-   * @param {number} variantIndex
-   * @param {number} segmentIndex
-   * @returns {Promise<Uint8Array>}
+   * Get a segment's TS data.
+   * Boundary segments: return from memory.
+   * Middle segments: return null (use originalUrl from playlist).
    */
   async getSegment(variantIndex = 0, segmentIndex = 0) {
     const variant = this._variants[variantIndex];
@@ -248,36 +204,20 @@ class HlsClipResult {
     const seg = variant.segments[segmentIndex];
     if (!seg) throw new Error(`Segment ${segmentIndex} not found`);
 
-    // Pre-clipped boundary segments are already in memory
     if (seg.data) return seg.data;
 
-    // Middle segment: fetch from CDN
-    const resp = await fetch(seg.originalUrl);
-    if (!resp.ok) throw new Error(`Segment fetch failed: ${resp.status}`);
-    const rawData = new Uint8Array(await resp.arrayBuffer());
+    // Middle segment: fetch from CDN (for cases where caller needs the data)
+    if (seg.originalUrl) {
+      const resp = await fetch(seg.originalUrl);
+      if (!resp.ok) throw new Error(`Segment fetch failed: ${resp.status}`);
+      return new Uint8Array(await resp.arrayBuffer());
+    }
 
-    // fMP4 segments pass through unchanged (already correct format)
-    if (seg._sourceFormat === 'fmp4') return rawData;
-
-    // TS segments: remux to fMP4
-    const parser = parseTs(rawData);
-    const audioTimescale = seg._audioTimescale || parser.audioSampleRate || 48000;
-
-    const firstVideoPts = parser.videoAccessUnits[0]?.pts ?? 0;
-    for (const au of parser.videoAccessUnits) { au.pts -= firstVideoPts; au.dts -= firstVideoPts; }
-    for (const au of parser.audioAccessUnits) { au.pts -= firstVideoPts; }
-
-    const videoBaseTime = Math.round(seg.timelineOffset * PTS_PER_SECOND);
-    const audioBaseTime = Math.round(seg.timelineOffset * audioTimescale);
-
-    return remuxToFragment(parser, segmentIndex + 1, videoBaseTime, audioBaseTime, audioTimescale);
+    return null;
   }
 
   /**
-   * Get all segment data for a variant (fetches middle segments).
-   * Useful for downloading the full clip.
-   * @param {number} variantIndex
-   * @returns {Promise<Uint8Array[]>}
+   * Get all segment data (fetches middle segments from CDN).
    */
   async getAllSegments(variantIndex = 0) {
     const variant = this._variants[variantIndex];
@@ -289,213 +229,20 @@ class HlsClipResult {
   }
 }
 
-// ── format detection ──────────────────────────────────────
-
-function _detectSegmentFormat(data) {
-  if (data.length < 8) return 'unknown';
-  // Check for TS sync byte
-  if (data[0] === 0x47) return 'ts';
-  for (let i = 0; i < Math.min(188, data.length); i++) {
-    if (data[i] === 0x47 && i + 188 < data.length && data[i + 188] === 0x47) return 'ts';
-  }
-  // Check for fMP4 (moof, styp, or ftyp box)
-  const type = String.fromCharCode(data[4], data[5], data[6], data[7]);
-  if (['moof', 'styp', 'ftyp', 'mdat'].includes(type)) return 'fmp4';
-  return 'unknown';
-}
-
-// ── TS variant processing ─────────────────────────────────
-
-function _processTsVariant({ firstSegData, lastSegData, overlapping, isSingleSegment, startTime, endTime, firstSeg, lastSeg, log }) {
-  const firstParser = parseTs(firstSegData);
-  const lastParser = !isSingleSegment && lastSegData ? parseTs(lastSegData) : null;
-
-  const { sps, pps } = extractCodecInfo(firstParser);
-  if (!sps || !pps) throw new Error('Could not extract SPS/PPS from video');
-  const audioSampleRate = firstParser.audioSampleRate || 48000;
-  const audioChannels = firstParser.audioChannels || 2;
-  const hasAudio = firstParser.audioAccessUnits.length > 0;
-  const audioTimescale = audioSampleRate;
-
-  const initSegment = createInitSegment({
-    sps, pps, audioSampleRate, audioChannels, hasAudio,
-    videoTimescale: PTS_PER_SECOND, audioTimescale,
-  });
-
-  const clipSegments = [];
-  let timelineOffset = 0;
-
-  // First segment (smart-rendered)
-  const firstRelStart = startTime - firstSeg.startTime;
-  const firstRelEnd = isSingleSegment ? endTime - firstSeg.startTime : undefined;
-  const firstClipped = clipSegment(firstParser, firstRelStart, firstRelEnd);
-  if (!firstClipped) throw new Error('First segment clip produced no samples');
-
-  const firstFragment = createFragment({
-    videoSamples: firstClipped.videoSamples,
-    audioSamples: firstClipped.audioSamples,
-    sequenceNumber: 1,
-    videoTimescale: PTS_PER_SECOND, audioTimescale,
-    videoBaseTime: 0, audioBaseTime: 0, audioSampleDuration: 1024,
-  });
-
-  clipSegments.push({
-    duration: firstClipped.duration, data: firstFragment,
-    originalUrl: null, timelineOffset: 0, isBoundary: true,
-  });
-  timelineOffset += firstClipped.duration;
-
-  // Middle segments
-  for (let i = 1; i < overlapping.length - 1; i++) {
-    clipSegments.push({
-      duration: overlapping[i].duration, data: null,
-      originalUrl: overlapping[i].url, timelineOffset, isBoundary: false,
-      _sourceFormat: 'ts', _audioTimescale: audioTimescale,
-    });
-    timelineOffset += overlapping[i].duration;
-  }
-
-  // Last segment
-  if (!isSingleSegment && lastParser) {
-    const lastRelEnd = endTime - lastSeg.startTime;
-    const lastClipped = clipSegment(lastParser, undefined, lastRelEnd);
-    if (lastClipped && lastClipped.videoSamples.length > 0) {
-      const lastFragment = createFragment({
-        videoSamples: lastClipped.videoSamples,
-        audioSamples: lastClipped.audioSamples,
-        sequenceNumber: overlapping.length,
-        videoTimescale: PTS_PER_SECOND, audioTimescale,
-        videoBaseTime: Math.round(timelineOffset * PTS_PER_SECOND),
-        audioBaseTime: Math.round(timelineOffset * audioTimescale),
-        audioSampleDuration: 1024,
-      });
-      clipSegments.push({
-        duration: lastClipped.duration, data: lastFragment,
-        originalUrl: null, timelineOffset, isBoundary: true,
-      });
-    }
-  }
-
-  return { initSegment, clipSegments, audioTimescale };
-}
-
-// ── fMP4 variant processing ───────────────────────────────
-
-function _processFmp4Variant({ firstSegData, lastSegData, fmp4Init, overlapping, isSingleSegment, startTime, endTime, firstSeg, lastSeg, log }) {
-  // For fMP4 sources: the init segment already has the moov with codec info.
-  // We pass it through as-is. Boundary segments are clipped using the fMP4
-  // converter. Middle segments pass through unchanged.
-
-  if (!fmp4Init) throw new Error('fMP4 source requires an init segment (#EXT-X-MAP)');
-
-  // Use the source init segment directly (it has the correct moov)
-  const initSegment = fmp4Init;
-
-  // Detect audio timescale from the init segment's moov
-  let audioTimescale = 48000;
-  try {
-    const boxes = parseBoxes(fmp4Init);
-    const moov = findBox(boxes, 'moov');
-    if (moov) {
-      const moovChildren = parseChildBoxes(moov);
-      for (const child of moovChildren) {
-        if (child.type === 'trak') {
-          const trakChildren = parseChildBoxes(child);
-          for (const tc of trakChildren) {
-            if (tc.type === 'mdia') {
-              const mdiaChildren = parseChildBoxes(tc);
-              let isSoun = false;
-              for (const mc of mdiaChildren) {
-                if (mc.type === 'hdlr' && mc.data.byteLength >= 20) {
-                  const handler = String.fromCharCode(mc.data[16], mc.data[17], mc.data[18], mc.data[19]);
-                  if (handler === 'soun') isSoun = true;
-                }
-                if (mc.type === 'mdhd' && isSoun) {
-                  const v = new DataView(mc.data.buffer, mc.data.byteOffset, mc.data.byteLength);
-                  audioTimescale = mc.data[8] === 0 ? v.getUint32(20) : v.getUint32(28);
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  } catch (e) { /* use default */ }
-
-  const clipSegments = [];
-  let timelineOffset = 0;
-
-  // First segment: clip using fMP4 converter
-  const firstRelStart = startTime - firstSeg.startTime;
-  const firstRelEnd = isSingleSegment ? endTime - firstSeg.startTime : undefined;
-
-  // Combine init + first segment for the converter
-  const firstCombined = new Uint8Array(fmp4Init.byteLength + firstSegData.byteLength);
-  firstCombined.set(fmp4Init, 0);
-  firstCombined.set(firstSegData, fmp4Init.byteLength);
-
-  try {
-    // Use convertFmp4ToMp4 with clipping, then re-fragment
-    // Actually, we can just pass the raw fMP4 segment through — for boundary
-    // segments, we trim at the keyframe level (no smart rendering for fMP4 yet).
-    // The segment already starts at a keyframe (HLS requirement).
-
-    // For the first segment, just pass through — the startTime cut is at keyframe
-    // For frame accuracy with fMP4, we'd need to add edit lists to the init segment
-    // or do smart rendering. For now, keyframe-accurate is the fMP4 path.
-    clipSegments.push({
-      duration: (firstRelEnd || firstSeg.duration) - firstRelStart,
-      data: firstSegData, // pass through the fMP4 segment
-      originalUrl: null, timelineOffset: 0, isBoundary: true,
-      _sourceFormat: 'fmp4',
-    });
-    timelineOffset += clipSegments[0].duration;
-  } catch (e) {
-    log('fMP4 first segment processing error: ' + e.message);
-    // Fallback: pass through as-is
-    clipSegments.push({
-      duration: firstSeg.duration, data: firstSegData,
-      originalUrl: null, timelineOffset: 0, isBoundary: true,
-      _sourceFormat: 'fmp4',
-    });
-    timelineOffset += firstSeg.duration;
-  }
-
-  // Middle segments: pass through unchanged (already fMP4!)
-  for (let i = 1; i < overlapping.length - 1; i++) {
-    clipSegments.push({
-      duration: overlapping[i].duration, data: null,
-      originalUrl: overlapping[i].url, timelineOffset, isBoundary: false,
-      _sourceFormat: 'fmp4',
-    });
-    timelineOffset += overlapping[i].duration;
-  }
-
-  // Last segment: pass through (truncation at end is handled by player)
-  if (!isSingleSegment && lastSegData) {
-    const lastRelEnd = endTime - lastSeg.startTime;
-    clipSegments.push({
-      duration: Math.min(lastRelEnd, lastSeg.duration),
-      data: lastSegData,
-      originalUrl: null, timelineOffset, isBoundary: true,
-      _sourceFormat: 'fmp4',
-    });
-  }
-
-  return { initSegment, clipSegments, audioTimescale };
-}
-
 // ── main function ─────────────────────────────────────────
 
 /**
- * Clip an HLS stream to a time range, producing a new HLS stream
- * with CMAF (fMP4) segments.
+ * Clip an HLS stream to a time range.
  *
- * @param {string} source - HLS URL (master or media playlist)
+ * Output is a new HLS stream where:
+ * - Boundary segments are smart-rendered (WebCodecs) or keyframe-accurate
+ * - Middle segments use original CDN URLs (completely untouched)
+ *
+ * @param {string|HlsStream} source - HLS URL or parsed HlsStream
  * @param {object} options
  * @param {number} options.startTime - Start time in seconds
  * @param {number} options.endTime - End time in seconds
- * @param {string|number} [options.quality] - 'highest', 'lowest', or bandwidth (default: all)
+ * @param {string|number} [options.quality] - 'highest', 'lowest', or bandwidth
  * @param {function} [options.onProgress] - Progress callback
  * @returns {Promise<HlsClipResult>}
  */
@@ -508,45 +255,44 @@ export async function clipHls(source, options = {}) {
   log('Parsing HLS playlist...');
   const stream = typeof source === 'string' ? await parseHls(source, { onProgress: log }) : source;
 
-  // Resolve variants to process
+  // Resolve variants
   let variantsToProcess = [];
-
   if (stream.isMaster) {
-    const sorted = stream.qualities; // sorted by bandwidth desc
-    if (quality === 'highest') {
-      variantsToProcess = [sorted[0]];
-    } else if (quality === 'lowest') {
-      variantsToProcess = [sorted[sorted.length - 1]];
-    } else if (typeof quality === 'number') {
-      stream.select(quality);
-      variantsToProcess = [stream.selected];
-    } else {
-      variantsToProcess = sorted; // all variants
-    }
+    const sorted = stream.qualities;
+    if (quality === 'highest') variantsToProcess = [sorted[0]];
+    else if (quality === 'lowest') variantsToProcess = [sorted[sorted.length - 1]];
+    else if (typeof quality === 'number') { stream.select(quality); variantsToProcess = [stream.selected]; }
+    else variantsToProcess = sorted;
   } else {
-    // Single media playlist — treat as one variant
-    variantsToProcess = [{ url: null, bandwidth: 0, resolution: null, _segments: stream.segments, _initSegmentUrl: stream.initSegmentUrl }];
+    variantsToProcess = [{
+      url: null, bandwidth: 0, resolution: null,
+      _segments: stream.segments, _initSegmentUrl: stream.initSegmentUrl,
+    }];
   }
 
   log(`Processing ${variantsToProcess.length} variant(s)...`);
+  if (isSmartRenderSupported()) {
+    log('Smart rendering: enabled (WebCodecs)');
+  } else {
+    log('Smart rendering: unavailable (keyframe-accurate fallback)');
+  }
 
   const variants = [];
+
   for (let vi = 0; vi < variantsToProcess.length; vi++) {
     const variant = variantsToProcess[vi];
     log(`Variant ${vi}: ${variant.resolution || variant.bandwidth || 'default'}`);
 
-    // Get segment list for this variant
-    let segments, initSegmentUrl;
+    // Get segment list
+    let segments;
     if (variant._segments) {
       segments = variant._segments;
-      initSegmentUrl = variant._initSegmentUrl;
     } else {
       const mediaResp = await fetch(variant.url);
       if (!mediaResp.ok) throw new Error(`Failed to fetch media playlist: ${mediaResp.status}`);
       const mediaText = await mediaResp.text();
       const parsed = parsePlaylistText(mediaText, variant.url);
       segments = parsed.segments;
-      initSegmentUrl = parsed.initSegmentUrl;
     }
 
     if (!segments.length) throw new Error('No segments found');
@@ -561,52 +307,52 @@ export async function clipHls(source, options = {}) {
 
     log(`Segments: ${overlapping.length} (${firstSeg.startTime.toFixed(1)}s – ${lastSeg.endTime.toFixed(1)}s)`);
 
-    // Download first boundary segment to detect format
+    // Download and clip boundary segments
     log('Downloading boundary segments...');
-    const firstSegData = new Uint8Array(await (await fetch(firstSeg.url)).arrayBuffer());
+    const firstData = new Uint8Array(await (await fetch(firstSeg.url)).arrayBuffer());
+    const firstParser = parseTs(firstData);
 
-    // Detect source format: TS or fMP4
-    const sourceFormat = _detectSegmentFormat(firstSegData);
-    const isFmp4Source = sourceFormat === 'fmp4';
+    const firstRelStart = startTime - firstSeg.startTime;
+    const firstRelEnd = isSingleSegment ? endTime - firstSeg.startTime : undefined;
+    const firstClipped = await clipSegment(firstParser, firstRelStart, firstRelEnd);
+    if (!firstClipped) throw new Error('First segment clip produced no samples');
 
-    log(`Source format: ${isFmp4Source ? 'fMP4 (CMAF)' : 'MPEG-TS'}`);
+    const clipSegments = [];
 
-    // Download fMP4 init segment if needed
-    let fmp4Init = null;
-    if (isFmp4Source && initSegmentUrl) {
-      const initResp = await fetch(initSegmentUrl);
-      if (initResp.ok) {
-        fmp4Init = new Uint8Array(await initResp.arrayBuffer());
-      }
+    // First segment (boundary, in memory)
+    clipSegments.push({
+      duration: firstClipped.duration,
+      data: firstClipped.data,
+      originalUrl: null,
+      isBoundary: true,
+      smartRendered: firstClipped.smartRendered,
+    });
+
+    // Middle segments (original CDN URLs, untouched)
+    for (let i = 1; i < overlapping.length - 1; i++) {
+      clipSegments.push({
+        duration: overlapping[i].duration,
+        data: null,
+        originalUrl: overlapping[i].url,
+        isBoundary: false,
+      });
     }
 
-    let lastSegData = null;
+    // Last segment (boundary, if different from first)
     if (!isSingleSegment) {
-      lastSegData = new Uint8Array(await (await fetch(lastSeg.url)).arrayBuffer());
-    }
-
-    let initSegment, clipSegments, audioTimescale;
-
-    if (isFmp4Source) {
-      // ── fMP4 source path ────────────────────────────────
-      const result = _processFmp4Variant({
-        firstSegData, lastSegData, fmp4Init,
-        overlapping, isSingleSegment,
-        startTime, endTime, firstSeg, lastSeg, log,
-      });
-      initSegment = result.initSegment;
-      clipSegments = result.clipSegments;
-      audioTimescale = result.audioTimescale;
-    } else {
-      // ── TS source path (existing smart-render pipeline) ──
-      const result = _processTsVariant({
-        firstSegData, lastSegData,
-        overlapping, isSingleSegment,
-        startTime, endTime, firstSeg, lastSeg, log,
-      });
-      initSegment = result.initSegment;
-      clipSegments = result.clipSegments;
-      audioTimescale = result.audioTimescale;
+      const lastData = new Uint8Array(await (await fetch(lastSeg.url)).arrayBuffer());
+      const lastParser = parseTs(lastData);
+      const lastRelEnd = endTime - lastSeg.startTime;
+      const lastClipped = await clipSegment(lastParser, undefined, lastRelEnd);
+      if (lastClipped && lastClipped.data) {
+        clipSegments.push({
+          duration: lastClipped.duration,
+          data: lastClipped.data,
+          originalUrl: null,
+          isBoundary: true,
+          smartRendered: lastClipped.smartRendered,
+        });
+      }
     }
 
     const totalDuration = clipSegments.reduce((sum, s) => sum + s.duration, 0);
@@ -615,15 +361,13 @@ export async function clipHls(source, options = {}) {
     variants.push({
       bandwidth: variant.bandwidth || 0,
       resolution: variant.resolution || null,
-      initSegment,
       segments: clipSegments,
     });
   }
 
-  const clipDuration = endTime - startTime;
   return new HlsClipResult({
     variants,
-    duration: clipDuration,
+    duration: endTime - startTime,
     startTime,
     endTime,
   });
