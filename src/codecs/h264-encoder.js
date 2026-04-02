@@ -13,6 +13,7 @@
 
 import { forwardDCT4x4, forwardHadamard4x4, forwardHadamard2x2, quantize4x4, clip255 } from './h264-transform.js';
 import { scanOrder4x4 } from './h264-tables.js';
+import { getCoeffToken, getTotalZeros, getTotalZerosChromaDC, getRunBefore, encodeLevels } from './h264-cavlc-tables.js';
 
 // ── Bitstream Writer ──────────────────────────────────────
 
@@ -382,6 +383,9 @@ export class H264Encoder {
     const mbType = 1 + predMode + cbpChroma * 4 + (cbpLuma > 0 ? 12 : 0);
     bs.writeUE(mbType);
 
+    // intra_chroma_pred_mode = 0 (DC) — required for ALL intra MBs
+    bs.writeUE(0);
+
     // mb_qp_delta = 0 (first MB uses slice QP)
     bs.writeSE(0);
 
@@ -400,176 +404,97 @@ export class H264Encoder {
     // (The chroma prediction handles the base values)
   }
 
-  // ── CAVLC Block Encoding ────────────────────────────────
+  // ── CAVLC Block Encoding (using spec-correct tables) ────
 
+  /**
+   * Encode a residual block using CAVLC with the correct VLC tables
+   * from the H.264 spec (Tables 9-5 through 9-10).
+   *
+   * @param {BitstreamWriter} bs - Output bitstream
+   * @param {Int32Array} coeffs - Quantized coefficients in scan order
+   * @param {number} maxCoeff - Maximum coefficients (16 for 4x4, 15 for AC)
+   * @param {number} nC - Predicted number of non-zero coefficients
+   */
   _encodeCavlcBlock(bs, coeffs, maxCoeff, nC) {
-    // Count trailing ones and total non-zero coefficients
-    let totalCoeff = 0;
-    let trailingOnes = 0;
-    const levels = [];
+    // Step 1: Analyze coefficients in reverse scan order
+    // Find non-zero coefficients and count trailing ones
+    const nonZeroValues = []; // level values in reverse scan order
+    const nonZeroPositions = []; // scan positions
 
-    // Scan in reverse order to find trailing ones
     for (let i = maxCoeff - 1; i >= 0; i--) {
       if (coeffs[i] !== 0) {
-        totalCoeff++;
-        if (trailingOnes < 3 && Math.abs(coeffs[i]) === 1 && levels.length === 0) {
-          trailingOnes++;
-        }
-        levels.push(coeffs[i]);
-      } else if (levels.length > 0) {
-        levels.push(0); // placeholder for run counting
+        nonZeroValues.push(coeffs[i]);
+        nonZeroPositions.push(i);
       }
     }
 
-    // Determine nC range for table selection
-    const tableIdx = nC < 2 ? 0 : nC < 4 ? 1 : nC < 8 ? 2 : 3;
+    const totalCoeff = nonZeroValues.length;
 
-    // Write coeff_token
-    if (totalCoeff === 0 && trailingOnes === 0) {
-      // Special case: all zeros
-      const table = CAVLC_COEFF_TOKEN[Math.min(tableIdx, 1)];
-      const [code, len] = table[0][0]; // (0,0)
-      bs.writeBits(code, len);
-      return;
+    // Count trailing ones (T1s): consecutive +/-1 at the END of the non-zero list
+    // In reverse scan order, these are at the BEGINNING of nonZeroValues
+    let trailingOnes = 0;
+    for (let i = 0; i < Math.min(totalCoeff, 3); i++) {
+      if (Math.abs(nonZeroValues[i]) === 1) trailingOnes++;
+      else break;
     }
 
-    // Look up coeff_token
-    const tc = Math.min(totalCoeff, 16);
-    const to = Math.min(trailingOnes, 3);
-    const table = CAVLC_COEFF_TOKEN[Math.min(tableIdx, 1)];
-    if (table[tc] && table[tc][to]) {
-      const [code, len] = table[tc][to];
-      bs.writeBits(code, len);
-    } else {
-      // Fallback: write as zero block
-      const [code, len] = table[0][0];
-      bs.writeBits(code, len);
-      return;
-    }
+    // Step 2: Write coeff_token
+    const [ctBits, ctLen] = getCoeffToken(totalCoeff, trailingOnes, nC);
+    bs.writeBits(ctBits, ctLen);
 
-    // Write trailing ones signs
-    const nonZeroLevels = [];
-    for (let i = maxCoeff - 1; i >= 0; i--) {
-      if (coeffs[i] !== 0) nonZeroLevels.push(coeffs[i]);
-    }
+    if (totalCoeff === 0) return;
 
+    // Step 3: Write trailing ones sign flags (1 bit each, 0=positive, 1=negative)
     for (let i = 0; i < trailingOnes; i++) {
-      bs.writeBit(nonZeroLevels[i] < 0 ? 1 : 0);
+      bs.writeBit(nonZeroValues[i] < 0 ? 1 : 0);
     }
 
-    // Write remaining levels (after trailing ones)
-    let suffixLength = totalCoeff > 10 && trailingOnes < 3 ? 1 : 0;
-    for (let i = trailingOnes; i < totalCoeff; i++) {
-      let level = nonZeroLevels[i];
-      // Adjust level for trailing ones
-      if (i === trailingOnes && trailingOnes < 3) {
-        level = level > 0 ? level - 1 : level + 1;
+    // Step 4: Write remaining levels (non-trailing-ones, still in reverse scan order)
+    if (totalCoeff > trailingOnes) {
+      const remainingLevels = nonZeroValues.slice(trailingOnes);
+      const { bits: levelBits, lengths: levelLens } = encodeLevels(
+        remainingLevels, trailingOnes, totalCoeff
+      );
+      for (let i = 0; i < levelBits.length; i++) {
+        // Write prefix (zeros + 1)
+        const prefix = levelLens[i] - (levelLens[i] > 0 ? 0 : 0);
+        // encodeLevels returns {bits, length} — write directly
+        bs.writeBits(levelBits[i], levelLens[i]);
       }
-      const absLevel = Math.abs(level);
-      const sign = level < 0 ? 1 : 0;
-
-      // level_prefix: unary code
-      let levelCode = (absLevel - 1) * 2 + sign;
-      if (i === trailingOnes && trailingOnes < 3) {
-        levelCode = absLevel * 2 + sign;
-      }
-
-      const prefix = levelCode >> suffixLength;
-      // Write prefix as unary
-      for (let j = 0; j < Math.min(prefix, 15); j++) bs.writeBit(0);
-      bs.writeBit(1);
-
-      // Write suffix
-      if (suffixLength > 0 || prefix >= 14) {
-        const suffBits = prefix >= 15 ? 12 : suffixLength;
-        if (suffBits > 0) {
-          bs.writeBits(levelCode & ((1 << suffBits) - 1), suffBits);
-        }
-      }
-
-      // Update suffix length
-      if (suffixLength === 0) suffixLength = 1;
-      if (absLevel > (3 << (suffixLength - 1))) suffixLength++;
     }
 
-    // Write total_zeros
+    // Step 5: Write total_zeros (only if totalCoeff < maxCoeff)
     if (totalCoeff < maxCoeff) {
-      let totalZeros = 0;
-      let lastNonZero = -1;
+      // Count total zeros before (and between) the non-zero coefficients
+      let lastNonZeroPos = 0;
       for (let i = maxCoeff - 1; i >= 0; i--) {
-        if (coeffs[i] !== 0) { lastNonZero = i; break; }
+        if (coeffs[i] !== 0) { lastNonZeroPos = i; break; }
       }
-      for (let i = 0; i <= lastNonZero; i++) {
+      let totalZeros = 0;
+      for (let i = 0; i <= lastNonZeroPos; i++) {
         if (coeffs[i] === 0) totalZeros++;
       }
 
-      // Simplified: write total_zeros using the UE-like VLC (not exactly spec but functional)
-      // The actual tables are complex; for a working encoder we use a simplified approach
-      this._writeTotalZeros(bs, totalZeros, totalCoeff, maxCoeff);
-    }
+      const [tzBits, tzLen] = getTotalZeros(totalCoeff, totalZeros);
+      bs.writeBits(tzBits, tzLen);
 
-    // Write run_before for each coefficient (except the last one)
-    let zerosLeft = 0;
-    for (let i = maxCoeff - 1; i >= 0; i--) {
-      if (coeffs[i] === 0) zerosLeft++;
-    }
-    // Adjust to only count zeros before the last non-zero
-    zerosLeft = 0;
-    let found = 0;
-    for (let i = 0; i < maxCoeff && found < totalCoeff; i++) {
-      if (coeffs[i] !== 0) {
-        found++;
-      } else if (found < totalCoeff) {
-        zerosLeft++;
-      }
-    }
-
-    // Run_before encoding (simplified)
-    let remaining = zerosLeft;
-    let coeffIdx = 0;
-    for (let i = maxCoeff - 1; i >= 0 && coeffIdx < totalCoeff - 1; i--) {
-      if (coeffs[i] !== 0) {
-        // Count run before this coefficient
+      // Step 6: Write run_before for each coefficient (reverse scan order)
+      // except the last one (its position is implied)
+      let zerosLeft = totalZeros;
+      for (let i = 0; i < totalCoeff - 1 && zerosLeft > 0; i++) {
+        const pos = nonZeroPositions[i];
+        // Count consecutive zeros before this coefficient in scan order
         let run = 0;
-        for (let j = i - 1; j >= 0; j--) {
+        for (let j = pos - 1; j >= 0; j--) {
           if (coeffs[j] === 0) run++;
           else break;
         }
-        if (remaining > 0) {
-          this._writeRunBefore(bs, Math.min(run, remaining), remaining);
-          remaining -= run;
-        }
-        coeffIdx++;
-      }
-    }
-  }
+        run = Math.min(run, zerosLeft);
 
-  _writeTotalZeros(bs, totalZeros, totalCoeff, maxCoeff) {
-    // Simplified total_zeros encoding: truncated unary
-    // This isn't exactly spec-compliant VLC but produces valid decodable output
-    if (totalCoeff >= maxCoeff) return; // no zeros possible
-    const maxZeros = maxCoeff - totalCoeff;
-    if (totalZeros === 0) {
-      bs.writeBit(1);
-    } else if (totalZeros <= maxZeros) {
-      for (let i = 0; i < Math.min(totalZeros, 8); i++) bs.writeBit(0);
-      bs.writeBit(1);
-      if (totalZeros > 8) {
-        bs.writeBits(totalZeros - 8, 4);
+        const [rbBits, rbLen] = getRunBefore(zerosLeft, run);
+        bs.writeBits(rbBits, rbLen);
+        zerosLeft -= run;
       }
-    }
-  }
-
-  _writeRunBefore(bs, run, zerosLeft) {
-    // Simplified run_before encoding
-    if (zerosLeft <= 0 || run <= 0) return;
-    if (run <= 6 && zerosLeft > 6) {
-      for (let i = 0; i < run; i++) bs.writeBit(0);
-      bs.writeBit(1);
-    } else {
-      // Truncated unary for small values
-      for (let i = 0; i < Math.min(run, 6); i++) bs.writeBit(0);
-      if (run < zerosLeft) bs.writeBit(1);
     }
   }
 }
