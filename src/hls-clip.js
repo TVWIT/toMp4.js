@@ -78,8 +78,13 @@ function remuxToFragment(parser, sequenceNumber, videoBaseTime, audioBaseTime, a
 }
 
 /**
- * Clip a parsed TS segment at the start (frame-accurate with preroll)
- * and/or at the end. Returns clipped access units + timing metadata.
+ * Clip a parsed TS segment at the start and/or end.
+ *
+ * Starts at the nearest keyframe at or before startTime (required for
+ * decoding). No preroll/edit-list — hls.js doesn't read edit lists, so
+ * every frame in the fMP4 gets played. The EXTINF duration matches the
+ * actual content, which means the clip may start slightly before the
+ * requested time (at the keyframe).
  */
 function clipSegment(parser, startTime, endTime) {
   const startPts = (startTime !== undefined ? startTime : 0) * PTS_PER_SECOND;
@@ -104,9 +109,8 @@ function clipSegment(parser, startTime, endTime) {
   if (clippedVideo.length === 0) return null;
 
   const keyframePts = clippedVideo[0].pts;
-  const prerollPts = Math.max(0, startPts - keyframePts);
 
-  // Clip audio from keyframe (for A/V sync, matching the fix in ts-to-mp4.js)
+  // Clip audio from keyframe (same start as video for A/V sync)
   const lastVideoPts = clippedVideo[clippedVideo.length - 1].pts;
   const audioEndPts = Math.min(endPts, lastVideoPts + PTS_PER_SECOND);
   const clippedAudio = audioAUs.filter(au => au.pts >= keyframePts && au.pts < audioEndPts);
@@ -116,19 +120,16 @@ function clipSegment(parser, startTime, endTime) {
   for (const au of clippedVideo) { au.pts -= offset; au.dts -= offset; }
   for (const au of clippedAudio) { au.pts -= offset; }
 
-  // Calculate durations
-  const videoDuration = clippedVideo.length > 1
+  // Duration = full content from keyframe (no preroll subtraction)
+  const duration = clippedVideo.length > 1
     ? clippedVideo[clippedVideo.length - 1].dts - clippedVideo[0].dts +
-      (clippedVideo[1].dts - clippedVideo[0].dts) // add one frame for last
+      (clippedVideo[1].dts - clippedVideo[0].dts)
     : 3003;
-  const playbackDuration = (videoDuration - prerollPts) / PTS_PER_SECOND;
 
   return {
     videoSamples: clippedVideo,
     audioSamples: clippedAudio,
-    prerollPts,
-    playbackDuration: Math.max(0, playbackDuration),
-    mediaDuration: videoDuration / PTS_PER_SECOND,
+    duration: duration / PTS_PER_SECOND,
   };
 }
 
@@ -383,13 +384,13 @@ export async function clipHls(source, options = {}) {
     });
 
     clipSegments.push({
-      duration: firstClipped.playbackDuration,
+      duration: firstClipped.duration,
       data: firstFragment, // pre-clipped, in memory
       originalUrl: null,
       timelineOffset: 0,
       isBoundary: true,
     });
-    timelineOffset += firstClipped.mediaDuration;
+    timelineOffset += firstClipped.duration;
 
     // ── Middle segments (pass-through, remuxed on demand) ──
     for (let i = 1; i < overlapping.length - 1; i++) {
@@ -410,6 +411,7 @@ export async function clipHls(source, options = {}) {
       const lastRelEnd = endTime - lastSeg.startTime;
       const lastClipped = clipSegment(lastParser, undefined, lastRelEnd);
       if (lastClipped && lastClipped.videoSamples.length > 0) {
+        const lastDuration = lastClipped.duration;
         const lastSeqNum = overlapping.length;
         const lastVideoBaseTime = Math.round(timelineOffset * PTS_PER_SECOND);
         const lastAudioBaseTime = Math.round(timelineOffset * audioTimescale);
@@ -426,7 +428,7 @@ export async function clipHls(source, options = {}) {
         });
 
         clipSegments.push({
-          duration: lastClipped.playbackDuration,
+          duration: lastClipped.duration,
           data: lastFragment,
           originalUrl: null,
           timelineOffset,
