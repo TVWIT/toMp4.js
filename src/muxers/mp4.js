@@ -241,9 +241,13 @@ export class MP4Muxer {
   buildMoov(mdatSize) {
     const mvhd = this.buildMvhd();
     const videoTrak = this.buildVideoTrak();
-    const audioTrak = this.buildAudioTrak();
     const udta = this.buildUdta();
-    return createBox('moov', mvhd, videoTrak, audioTrak, udta);
+    // Only include audio track if there are audio samples
+    if (this.audioSampleSizes.length > 0) {
+      const audioTrak = this.buildAudioTrak();
+      return createBox('moov', mvhd, videoTrak, audioTrak, udta);
+    }
+    return createBox('moov', mvhd, videoTrak, udta);
   }
 
   buildUdta() {
@@ -279,7 +283,13 @@ export class MP4Muxer {
   }
 
   calculateVideoDuration() {
-    if (this.parser.videoDts.length < 2) return 0;
+    if (this.parser.videoDts.length === 0) return 0;
+    // Single frame (e.g. I-frame-only HLS segments): we can't derive framerate
+    // from a single PTS/DTS value, so we use 3003 ticks (30fps at 90kHz timescale)
+    // as a safe default. The exact value doesn't affect playback — it just needs
+    // to be non-zero so mobile decoders accept the file. This matches the fallback
+    // in buildVideoStts().
+    if (this.parser.videoDts.length === 1) return 3003;
     const firstDts = this.parser.videoDts[0];
     const lastDts = this.parser.videoDts[this.parser.videoDts.length - 1];
     const avgDuration = (lastDts - firstDts) / (this.parser.videoDts.length - 1);
@@ -438,7 +448,7 @@ export class MP4Muxer {
     for (let i = 0; i < this.parser.videoDts.length; i++) {
       const duration = i < this.parser.videoDts.length - 1
         ? this.parser.videoDts[i + 1] - this.parser.videoDts[i]
-        : (entries.length > 0 ? entries[entries.length - 1].duration : 3003);
+        : (entries.length > 0 ? entries[entries.length - 1].duration : 3003); // 30fps fallback for single-frame (see calculateVideoDuration)
       if (duration === lastDuration) count++;
       else { if (count > 0) entries.push({ count, duration: lastDuration }); lastDuration = duration; count = 1; }
     }
