@@ -16,6 +16,7 @@
  */
 
 import toMp4 from './index.js';
+import { parseHls, downloadHls, parsePlaylistText, toAbsoluteUrl } from './hls.js';
 
 export class ImageResult {
   constructor(blob, filename = 'thumbnail.jpg') {
@@ -266,4 +267,178 @@ export async function thumbnail(input, options = {}) {
   };
 
   return await withTimeout(run(), timeoutMs, 'Thumbnail generation timed out');
+}
+
+/**
+ * Capture a frame from a video element at a given time.
+ * Shared by thumbnails() to avoid duplicating the canvas logic.
+ */
+async function captureFrame(video, timeSeconds, { maxWidth, mimeType, quality }) {
+  const dur = Number.isFinite(video.duration) ? video.duration : 0;
+  const safeTime = dur > 0 ? Math.min(timeSeconds, Math.max(0, dur - 0.05)) : timeSeconds;
+  await seek(video, safeTime);
+
+  const vw = video.videoWidth || 0;
+  const vh = video.videoHeight || 0;
+  if (!vw || !vh) throw new Error('No video frame available');
+
+  const scale = Math.min(1, maxWidth / vw);
+  const outW = Math.max(1, Math.round(vw * scale));
+  const outH = Math.max(1, Math.round(vh * scale));
+
+  const canvas = document.createElement('canvas');
+  canvas.width = outW;
+  canvas.height = outH;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas not supported');
+
+  ctx.drawImage(video, 0, 0, outW, outH);
+
+  const blob = await new Promise((resolve, reject) => {
+    try {
+      canvas.toBlob(
+        (b) => (b ? resolve(b) : reject(new Error('Failed to encode thumbnail'))),
+        mimeType,
+        quality,
+      );
+    } catch (err) {
+      reject(err);
+    }
+  });
+
+  return new ImageResult(blob, mimeType === 'image/png' ? 'thumbnail.png' : 'thumbnail.jpg');
+}
+
+/**
+ * Batch thumbnail extraction from an HLS stream.
+ *
+ * Parses the playlist once, groups times by segment, fetches each segment
+ * once, and reuses a single video element per segment for all seeks.
+ *
+ * @param {string|import('./hls.js').HlsStream} input - HLS URL or HlsStream
+ * @param {object} options
+ * @param {number[]} options.times - Times in seconds to capture
+ * @param {number} [options.maxWidth=80] - Resize output width
+ * @param {string} [options.mimeType='image/jpeg'] - Output mime type
+ * @param {number} [options.quality=0.6] - 0..1 (jpeg/webp)
+ * @param {number} [options.timeoutMs=30000] - Overall timeout
+ * @param {string} [options.hlsQuality='lowest'] - Variant selection
+ * @param {number} [options.concurrency=4] - Max segments fetched in parallel
+ * @param {function} [options.onThumbnail] - Called as each thumbnail completes: (time, imageResult) => void
+ * @returns {Promise<Map<number, ImageResult>>}
+ */
+export async function thumbnails(input, options = {}) {
+  requireBrowser();
+
+  const {
+    times,
+    maxWidth = 80,
+    mimeType = 'image/jpeg',
+    quality = 0.6,
+    timeoutMs = 30000,
+    hlsQuality = 'lowest',
+    concurrency = 4,
+    onThumbnail,
+  } = options;
+
+  if (!times || !times.length) return new Map();
+
+  const run = async () => {
+    // Step 1: Parse the HLS playlist once
+    let stream = input;
+    if (typeof input === 'string') {
+      stream = await parseHls(input);
+    }
+
+    // Step 2: Resolve to media segments
+    let segments;
+    if (stream.isMaster) {
+      stream.select(hlsQuality);
+      const variant = stream.selected;
+      const resp = await fetch(variant.url);
+      if (!resp.ok) throw new Error(`Failed to fetch media playlist: ${resp.status}`);
+      const text = await resp.text();
+      const parsed = parsePlaylistText(text, variant.url);
+      segments = parsed.segments;
+    } else {
+      segments = stream.segments;
+    }
+
+    if (!segments || segments.length === 0) {
+      throw new Error('No segments found in playlist');
+    }
+
+    // Step 3: Group requested times by segment
+    const sortedTimes = [...times].sort((a, b) => a - b);
+    const segmentGroups = new Map(); // segmentIndex → { segment, times[] }
+
+    for (const t of sortedTimes) {
+      // Find the segment containing this time
+      let segIdx = segments.length - 1;
+      for (let i = 0; i < segments.length; i++) {
+        if (t < segments[i].endTime) {
+          segIdx = i;
+          break;
+        }
+      }
+      if (!segmentGroups.has(segIdx)) {
+        segmentGroups.set(segIdx, { segment: segments[segIdx], times: [] });
+      }
+      segmentGroups.get(segIdx).times.push(t);
+    }
+
+    // Step 4: Process segment groups with concurrency limit
+    const results = new Map();
+    const groups = [...segmentGroups.values()];
+
+    // Process in batches of `concurrency`
+    for (let i = 0; i < groups.length; i += concurrency) {
+      const batch = groups.slice(i, i + concurrency);
+      await Promise.all(batch.map(async ({ segment, times: groupTimes }) => {
+        // Fetch segment data
+        const resp = await fetch(segment.url);
+        if (!resp.ok) throw new Error(`Segment fetch failed: ${resp.status}`);
+        const tsData = new Uint8Array(await resp.arrayBuffer());
+
+        // Transmux to MP4
+        const mp4 = await toMp4(tsData);
+        const mediaUrl = mp4.toURL();
+
+        // Create one video element for all times in this segment
+        const video = document.createElement('video');
+        video.muted = true;
+        video.playsInline = true;
+        video.preload = 'auto';
+
+        const host = document.createElement('div');
+        host.style.cssText = 'position:fixed;left:-99999px;top:0;width:1px;height:1px;overflow:hidden';
+        host.appendChild(video);
+        document.body.appendChild(host);
+
+        try {
+          video.src = mediaUrl;
+          await waitOnce(video, 'loadeddata');
+
+          // play/pause kick for iOS
+          try { await video.play(); video.pause(); } catch {}
+
+          // Seek to each time and capture
+          for (const t of groupTimes) {
+            const localTime = t - segment.startTime;
+            const image = await captureFrame(video, localTime, { maxWidth, mimeType, quality });
+            results.set(t, image);
+            onThumbnail?.(t, image);
+          }
+        } finally {
+          try { video.pause(); video.removeAttribute('src'); video.load(); } catch {}
+          try { host.remove(); } catch {}
+          mp4.revokeURL();
+        }
+      }));
+    }
+
+    return results;
+  };
+
+  return await withTimeout(run(), timeoutMs, 'Batch thumbnail generation timed out');
 }
