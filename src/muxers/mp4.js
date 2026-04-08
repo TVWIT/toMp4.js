@@ -390,7 +390,10 @@ export class MP4Muxer {
   }
 
   buildVideoStbl() {
-    const boxes = [this.buildVideoStsd(), this.buildVideoStts(), this.buildVideoCtts(), this.buildVideoStsc(), this.buildVideoStsz(), this.buildVideoStco()];
+    const boxes = [this.buildVideoStsd(), this.buildVideoStts()];
+    const ctts = this.buildVideoCtts();
+    if (ctts) boxes.push(ctts);
+    boxes.push(this.buildVideoStsc(), this.buildVideoStsz(), this.buildVideoStco());
     const stss = this.buildVideoStss();
     if (stss) boxes.push(stss);
     return createBox('stbl', ...boxes);
@@ -461,6 +464,13 @@ export class MP4Muxer {
   }
 
   buildVideoCtts() {
+    // Single frame: no decode reordering is possible, so ctts is meaningless.
+    // Omitting it avoids the case where a preserved PTS/DTS gap (e.g. from
+    // I-frame-only HLS segments extracted from B-frame sources) places the
+    // frame's presentation time past the track duration, which mobile
+    // decoders reject.
+    if (this.parser.videoAccessUnits.length <= 1) return null;
+
     const entries = [];
     for (const au of this.parser.videoAccessUnits) {
       const cts = au.pts - au.dts;
