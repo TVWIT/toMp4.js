@@ -16,6 +16,7 @@
  */
 
 import toMp4 from './index.js';
+import { convertTsToMp4 } from './ts-to-mp4.js';
 import { parseHls, downloadHls, parsePlaylistText, toAbsoluteUrl } from './hls.js';
 
 export class ImageResult {
@@ -313,7 +314,7 @@ async function captureFrame(video, timeSeconds, { maxWidth, mimeType, quality })
  * Batch thumbnail extraction from an HLS stream.
  *
  * Parses the playlist once, groups times by segment, fetches each segment
- * once, and reuses a single video element per segment for all seeks.
+ * once, and reuses video elements and canvases across captures.
  *
  * @param {string|import('./hls.js').HlsStream} input - HLS URL or HlsStream
  * @param {object} options
@@ -370,16 +371,12 @@ export async function thumbnails(input, options = {}) {
 
     // Step 3: Group requested times by segment
     const sortedTimes = [...times].sort((a, b) => a - b);
-    const segmentGroups = new Map(); // segmentIndex → { segment, times[] }
+    const segmentGroups = new Map();
 
     for (const t of sortedTimes) {
-      // Find the segment containing this time
       let segIdx = segments.length - 1;
       for (let i = 0; i < segments.length; i++) {
-        if (t < segments[i].endTime) {
-          segIdx = i;
-          break;
-        }
+        if (t < segments[i].endTime) { segIdx = i; break; }
       }
       if (!segmentGroups.has(segIdx)) {
         segmentGroups.set(segIdx, { segment: segments[segIdx], times: [] });
@@ -387,63 +384,110 @@ export async function thumbnails(input, options = {}) {
       segmentGroups.get(segIdx).times.push(t);
     }
 
-    // Step 4: Process segment groups with a concurrent pool.
-    // Unlike chunked batches, a pool starts the next segment as soon as
-    // any slot frees up, so fetch/transmux of segment N+1 overlaps with
-    // seek/capture of segment N.
-    const results = new Map();
+    // Step 4: Prefetch all segments in parallel (network is the bottleneck).
+    // This starts all HTTP requests immediately regardless of concurrency,
+    // so segment data is ready by the time a worker needs it.
     const groups = [...segmentGroups.values()];
+    const fetchPromises = groups.map(({ segment }) =>
+      fetch(segment.url).then(r => {
+        if (!r.ok) throw new Error(`Segment fetch failed: ${r.status}`);
+        return r.arrayBuffer();
+      })
+    );
+
+    // Step 5: Process with a concurrent worker pool.
+    // Each worker owns one reusable video element and canvas.
+    const results = new Map();
     let next = 0;
 
-    async function processGroup({ segment, times: groupTimes }) {
-      const resp = await fetch(segment.url);
-      if (!resp.ok) throw new Error(`Segment fetch failed: ${resp.status}`);
-      const tsData = new Uint8Array(await resp.arrayBuffer());
+    // Detect iOS for play/pause kick (only platform that needs it)
+    const needsPlayKick = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
-      const mp4 = await toMp4(tsData);
-      const mediaUrl = mp4.toURL();
-
+    async function worker() {
+      // Each worker gets its own reusable video + canvas + offscreen host
       const video = document.createElement('video');
       video.muted = true;
       video.playsInline = true;
       video.preload = 'auto';
-
       const host = document.createElement('div');
       host.style.cssText = 'position:fixed;left:-99999px;top:0;width:1px;height:1px;overflow:hidden';
       host.appendChild(video);
       document.body.appendChild(host);
 
+      let canvas = null;
+      let ctx = null;
+      let canvasW = 0;
+      let canvasH = 0;
+
       try {
-        video.src = mediaUrl;
-        await waitOnce(video, 'loadeddata');
+        while (next < groups.length) {
+          const idx = next++;
+          const { segment, times: groupTimes } = groups[idx];
 
-        // play/pause kick for iOS
-        try { await video.play(); video.pause(); } catch {}
+          // Wait for this segment's prefetch to complete
+          const buf = await fetchPromises[idx];
 
-        for (const t of groupTimes) {
-          const localTime = t - segment.startTime;
-          const image = await captureFrame(video, localTime, { maxWidth, mimeType, quality });
-          results.set(t, image);
-          onThumbnail?.(t, image);
+          // Transmux TS → MP4 directly (skip format detection + progress overhead)
+          const mp4Data = convertTsToMp4(new Uint8Array(buf));
+          const blob = new Blob([mp4Data], { type: 'video/mp4' });
+          const mediaUrl = URL.createObjectURL(blob);
+
+          try {
+            video.src = mediaUrl;
+            await waitOnce(video, 'loadeddata');
+
+            if (needsPlayKick) {
+              try { await video.play(); video.pause(); } catch {}
+            }
+
+            // Size canvas on first use or if dimensions change
+            const vw = video.videoWidth || 1;
+            const vh = video.videoHeight || 1;
+            const scale = Math.min(1, maxWidth / vw);
+            const outW = Math.max(1, Math.round(vw * scale));
+            const outH = Math.max(1, Math.round(vh * scale));
+
+            if (!canvas || outW !== canvasW || outH !== canvasH) {
+              canvas = document.createElement('canvas');
+              canvas.width = outW;
+              canvas.height = outH;
+              ctx = canvas.getContext('2d', { willReadFrequently: false });
+              canvasW = outW;
+              canvasH = outH;
+            }
+
+            for (const t of groupTimes) {
+              const localTime = t - segment.startTime;
+              const dur = Number.isFinite(video.duration) ? video.duration : 0;
+              const safeTime = dur > 0 ? Math.min(localTime, Math.max(0, dur - 0.05)) : localTime;
+              await seek(video, safeTime);
+
+              ctx.drawImage(video, 0, 0, canvasW, canvasH);
+
+              const imageBlob = await new Promise((resolve, reject) => {
+                canvas.toBlob(
+                  b => b ? resolve(b) : reject(new Error('toBlob failed')),
+                  mimeType, quality
+                );
+              });
+              const image = new ImageResult(imageBlob, mimeType === 'image/png' ? 'thumbnail.png' : 'thumbnail.jpg');
+              results.set(t, image);
+              onThumbnail?.(t, image);
+            }
+          } finally {
+            URL.revokeObjectURL(mediaUrl);
+          }
         }
       } finally {
         try { video.pause(); video.removeAttribute('src'); video.load(); } catch {}
         try { host.remove(); } catch {}
-        mp4.revokeURL();
       }
     }
 
-    async function worker() {
-      while (next < groups.length) {
-        const group = groups[next++];
-        await processGroup(group);
-      }
-    }
-
+    const workerCount = Math.min(concurrency, groups.length);
     const workers = [];
-    for (let i = 0; i < Math.min(concurrency, groups.length); i++) {
-      workers.push(worker());
-    }
+    for (let i = 0; i < workerCount; i++) workers.push(worker());
     await Promise.all(workers);
 
     return results;
