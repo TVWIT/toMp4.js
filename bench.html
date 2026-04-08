@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>toMp4 thumbnails() benchmark</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: monospace; background: #111; color: #eee; padding: 20px; }
+    h1 { font-size: 16px; margin-bottom: 12px; }
+    .run-btn { background: #2a6; color: #fff; border: none; padding: 8px 16px;
+               font-family: monospace; font-size: 14px; cursor: pointer; margin-bottom: 16px; }
+    .run-btn:disabled { opacity: 0.4; cursor: default; }
+    #log { white-space: pre-wrap; font-size: 13px; line-height: 1.6; margin-bottom: 16px; }
+    #thumbs { display: flex; flex-wrap: wrap; gap: 4px; }
+    #thumbs img { border: 1px solid #333; }
+    .pass { color: #5f5; } .warn { color: #ff5; } .fail { color: #f55; }
+    .dim { color: #888; }
+    table { border-collapse: collapse; margin: 12px 0; }
+    td, th { text-align: left; padding: 2px 12px 2px 0; }
+  </style>
+</head>
+<body>
+  <h1>toMp4.thumbnails() bench</h1>
+  <button class="run-btn" onclick="runBench()">Run benchmark</button>
+  <div id="log"></div>
+  <div id="thumbs"></div>
+
+<script type="module">
+import { toMp4, parseHls, thumbnails } from './src/index.js';
+
+const HLS_URL = 'https://api.v3.invintus.com/StreamURI/hls/1000000000/2025101001/media.m3u8';
+const THUMB_COUNT = 14;
+const CONCURRENCIES = [1, 2, 4, 7, 14];
+const RUNS_PER = 2;
+
+const $log = document.getElementById('log');
+const $thumbs = document.getElementById('thumbs');
+
+function log(msg, cls) {
+  const span = document.createElement('span');
+  span.className = cls || '';
+  span.textContent = msg + '\n';
+  $log.appendChild(span);
+  $log.scrollTop = $log.scrollHeight;
+}
+
+function clearThumbs() { $thumbs.innerHTML = ''; }
+
+async function runBench() {
+  const btn = document.querySelector('.run-btn');
+  btn.disabled = true;
+  $log.innerHTML = '';
+  clearThumbs();
+
+  try {
+    // Step 1: Parse HLS to get duration
+    log('Parsing HLS playlist...');
+    const t0 = performance.now();
+    const stream = await parseHls(HLS_URL);
+    stream.select('lowest');
+    const variant = stream.selected;
+
+    const resp = await fetch(variant.url);
+    const text = await resp.text();
+    // get total duration from segments
+    const lines = text.split('\n');
+    let totalDuration = 0;
+    for (const line of lines) {
+      const m = line.match(/#EXTINF:([\d.]+)/);
+      if (m) totalDuration += parseFloat(m[1]);
+    }
+    const parseTime = performance.now() - t0;
+
+    log(`Variant: ${variant.name} (${variant.kbps} kbps)`);
+    log(`Duration: ${totalDuration.toFixed(1)}s`);
+    log(`Playlist parse: ${parseTime.toFixed(0)}ms`);
+    log('');
+
+    // Generate 14 evenly-spaced times
+    const times = [];
+    for (let i = 0; i < THUMB_COUNT; i++) {
+      times.push(Math.round((totalDuration / THUMB_COUNT) * i));
+    }
+    log(`Times: [${times.join(', ')}]`);
+    log('');
+
+    // Step 2: Benchmark thumbnails() at different concurrencies
+    const results = {};
+
+    for (const conc of CONCURRENCIES) {
+      const timings = [];
+
+      for (let run = 0; run < RUNS_PER; run++) {
+        clearThumbs();
+        const perThumb = [];
+        const start = performance.now();
+        let firstThumbTime = null;
+
+        const res = await toMp4.thumbnails(HLS_URL, {
+          times,
+          maxWidth: 80,
+          quality: 0.6,
+          hlsQuality: 'lowest',
+          concurrency: conc,
+          timeoutMs: 120000,
+          onThumbnail: (time, image) => {
+            const elapsed = performance.now() - start;
+            if (!firstThumbTime) firstThumbTime = elapsed;
+            perThumb.push({ time, elapsed });
+
+            if (run === RUNS_PER - 1) {
+              const img = document.createElement('img');
+              img.src = image.toURL();
+              img.title = `t=${time}s`;
+              $thumbs.appendChild(img);
+            }
+          },
+        });
+
+        const total = performance.now() - start;
+        timings.push({ total, firstThumb: firstThumbTime, perThumb });
+
+        // cleanup
+        for (const img of res.values()) img.revokeURL();
+
+        log(`  conc=${conc} run=${run + 1}: ${total.toFixed(0)}ms total, first@${firstThumbTime.toFixed(0)}ms`, 'dim');
+      }
+
+      const avgTotal = timings.reduce((s, t) => s + t.total, 0) / timings.length;
+      const avgFirst = timings.reduce((s, t) => s + t.firstThumb, 0) / timings.length;
+      const best = Math.min(...timings.map(t => t.total));
+      results[conc] = { avgTotal, avgFirst, best, timings };
+    }
+
+    // Step 3: Results table
+    log('');
+    log('=== RESULTS ===', 'pass');
+    log('');
+    log(`conc  avg(ms)   best(ms)  first(ms)  per-thumb(ms)`);
+    log(`----  --------  --------  ---------  -------------`);
+    for (const conc of CONCURRENCIES) {
+      const r = results[conc];
+      const perThumb = (r.avgTotal / THUMB_COUNT).toFixed(0);
+      log(`${String(conc).padEnd(6)}${String(r.avgTotal.toFixed(0)).padEnd(10)}${String(r.best.toFixed(0)).padEnd(10)}${String(r.avgFirst.toFixed(0)).padEnd(11)}${perThumb}`);
+    }
+
+    // Step 4: Detailed waterfall for best concurrency
+    const bestConc = CONCURRENCIES.reduce((a, b) =>
+      results[a].avgTotal < results[b].avgTotal ? a : b
+    );
+    log('');
+    log(`Best concurrency: ${bestConc}`, 'pass');
+
+    const bestRun = results[bestConc].timings[results[bestConc].timings.length - 1];
+    log('');
+    log('Waterfall (last run):', 'warn');
+    for (const { time, elapsed } of bestRun.perThumb) {
+      const bar = '#'.repeat(Math.round(elapsed / 100));
+      log(`  t=${String(time).padEnd(6)} ${String(elapsed.toFixed(0)).padStart(6)}ms ${bar}`);
+    }
+
+    // Step 5: Compare against naive sequential approach
+    log('');
+    log('--- Naive comparison: 14x individual thumbnail() ---', 'warn');
+    clearThumbs();
+    const naiveStart = performance.now();
+    for (const t of times) {
+      const img = await toMp4.thumbnail(HLS_URL, {
+        time: t,
+        maxWidth: 80,
+        quality: 0.6,
+        hlsQuality: 'lowest',
+        timeoutMs: 30000,
+      });
+      img.revokeURL();
+    }
+    const naiveTotal = performance.now() - naiveStart;
+    log(`14x thumbnail(): ${naiveTotal.toFixed(0)}ms (${(naiveTotal / THUMB_COUNT).toFixed(0)}ms/thumb)`, 'fail');
+    log(`thumbnails() @ conc=${bestConc}: ${results[bestConc].best.toFixed(0)}ms (${(results[bestConc].best / THUMB_COUNT).toFixed(0)}ms/thumb)`, 'pass');
+    log(`Speedup: ${(naiveTotal / results[bestConc].best).toFixed(1)}x`, 'pass');
+
+    log('');
+    log('DONE', 'pass');
+
+    // Output machine-readable results for scripting
+    window.__benchResults = { results, naiveTotal, bestConc, times };
+    console.log('__benchResults', JSON.stringify(window.__benchResults, null, 2));
+
+  } catch (err) {
+    log(`ERROR: ${err.message}`, 'fail');
+    console.error(err);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+window.runBench = runBench;
+</script>
+</body>
+</html>
