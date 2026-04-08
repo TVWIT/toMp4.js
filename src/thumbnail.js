@@ -387,55 +387,64 @@ export async function thumbnails(input, options = {}) {
       segmentGroups.get(segIdx).times.push(t);
     }
 
-    // Step 4: Process segment groups with concurrency limit
+    // Step 4: Process segment groups with a concurrent pool.
+    // Unlike chunked batches, a pool starts the next segment as soon as
+    // any slot frees up, so fetch/transmux of segment N+1 overlaps with
+    // seek/capture of segment N.
     const results = new Map();
     const groups = [...segmentGroups.values()];
+    let next = 0;
 
-    // Process in batches of `concurrency`
-    for (let i = 0; i < groups.length; i += concurrency) {
-      const batch = groups.slice(i, i + concurrency);
-      await Promise.all(batch.map(async ({ segment, times: groupTimes }) => {
-        // Fetch segment data
-        const resp = await fetch(segment.url);
-        if (!resp.ok) throw new Error(`Segment fetch failed: ${resp.status}`);
-        const tsData = new Uint8Array(await resp.arrayBuffer());
+    async function processGroup({ segment, times: groupTimes }) {
+      const resp = await fetch(segment.url);
+      if (!resp.ok) throw new Error(`Segment fetch failed: ${resp.status}`);
+      const tsData = new Uint8Array(await resp.arrayBuffer());
 
-        // Transmux to MP4
-        const mp4 = await toMp4(tsData);
-        const mediaUrl = mp4.toURL();
+      const mp4 = await toMp4(tsData);
+      const mediaUrl = mp4.toURL();
 
-        // Create one video element for all times in this segment
-        const video = document.createElement('video');
-        video.muted = true;
-        video.playsInline = true;
-        video.preload = 'auto';
+      const video = document.createElement('video');
+      video.muted = true;
+      video.playsInline = true;
+      video.preload = 'auto';
 
-        const host = document.createElement('div');
-        host.style.cssText = 'position:fixed;left:-99999px;top:0;width:1px;height:1px;overflow:hidden';
-        host.appendChild(video);
-        document.body.appendChild(host);
+      const host = document.createElement('div');
+      host.style.cssText = 'position:fixed;left:-99999px;top:0;width:1px;height:1px;overflow:hidden';
+      host.appendChild(video);
+      document.body.appendChild(host);
 
-        try {
-          video.src = mediaUrl;
-          await waitOnce(video, 'loadeddata');
+      try {
+        video.src = mediaUrl;
+        await waitOnce(video, 'loadeddata');
 
-          // play/pause kick for iOS
-          try { await video.play(); video.pause(); } catch {}
+        // play/pause kick for iOS
+        try { await video.play(); video.pause(); } catch {}
 
-          // Seek to each time and capture
-          for (const t of groupTimes) {
-            const localTime = t - segment.startTime;
-            const image = await captureFrame(video, localTime, { maxWidth, mimeType, quality });
-            results.set(t, image);
-            onThumbnail?.(t, image);
-          }
-        } finally {
-          try { video.pause(); video.removeAttribute('src'); video.load(); } catch {}
-          try { host.remove(); } catch {}
-          mp4.revokeURL();
+        for (const t of groupTimes) {
+          const localTime = t - segment.startTime;
+          const image = await captureFrame(video, localTime, { maxWidth, mimeType, quality });
+          results.set(t, image);
+          onThumbnail?.(t, image);
         }
-      }));
+      } finally {
+        try { video.pause(); video.removeAttribute('src'); video.load(); } catch {}
+        try { host.remove(); } catch {}
+        mp4.revokeURL();
+      }
     }
+
+    async function worker() {
+      while (next < groups.length) {
+        const group = groups[next++];
+        await processGroup(group);
+      }
+    }
+
+    const workers = [];
+    for (let i = 0; i < Math.min(concurrency, groups.length); i++) {
+      workers.push(worker());
+    }
+    await Promise.all(workers);
 
     return results;
   };
