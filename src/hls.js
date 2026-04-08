@@ -39,6 +39,7 @@ class HlsStream {
   constructor(masterUrl, variants, segments = null) {
     this.masterUrl = masterUrl;
     this.variants = variants;
+    this.iframeVariants = [];
     this.segments = segments;
     this._selectedVariant = null;
   }
@@ -125,6 +126,7 @@ class HlsSegment {
 function parsePlaylistText(text, baseUrl) {
   const lines = text.split('\n').map(l => l.trim());
   const variants = [];
+  const iframeVariants = [];
   const segments = [];
   let initSegmentUrl = null;
   let currentDuration = 0;
@@ -140,7 +142,7 @@ function parsePlaylistText(text, baseUrl) {
       const bandwidth = parseInt(attrs.match(/BANDWIDTH=(\d+)/)?.[1] || '0');
       const resolution = attrs.match(/RESOLUTION=(\d+x\d+)/)?.[1] || null;
       const codecs = attrs.match(/CODECS="([^"]+)"/)?.[1] || null;
-      
+
       // Next non-comment line is the URL
       let urlLine = lines[i + 1];
       if (urlLine && !urlLine.startsWith('#')) {
@@ -149,6 +151,23 @@ function parsePlaylistText(text, baseUrl) {
           resolution,
           codecs,
           url: toAbsoluteUrl(urlLine, baseUrl)
+        }));
+      }
+    }
+
+    // Parse I-frame-only variants (URI is inline in the tag)
+    if (line.startsWith('#EXT-X-I-FRAME-STREAM-INF:')) {
+      const attrs = line.substring(26);
+      const bandwidth = parseInt(attrs.match(/BANDWIDTH=(\d+)/)?.[1] || '0');
+      const resolution = attrs.match(/RESOLUTION=(\d+x\d+)/)?.[1] || null;
+      const codecs = attrs.match(/CODECS="([^"]+)"/)?.[1] || null;
+      const uri = attrs.match(/URI="([^"]+)"/)?.[1];
+      if (uri) {
+        iframeVariants.push(new HlsVariant({
+          bandwidth,
+          resolution,
+          codecs,
+          url: toAbsoluteUrl(uri, baseUrl)
         }));
       }
     }
@@ -183,7 +202,7 @@ function parsePlaylistText(text, baseUrl) {
     }
   }
 
-  return { variants, segments, initSegmentUrl };
+  return { variants, iframeVariants, segments, initSegmentUrl };
 }
 
 /**
@@ -205,12 +224,14 @@ async function parseHls(url, options = {}) {
   }
   
   const text = await response.text();
-  const { variants, segments, initSegmentUrl } = parsePlaylistText(text, url);
+  const { variants, iframeVariants, segments, initSegmentUrl } = parsePlaylistText(text, url);
 
   if (variants.length > 0) {
     // Master playlist
     log(`Found ${variants.length} quality variants`);
-    return new HlsStream(url, variants);
+    const stream = new HlsStream(url, variants);
+    stream.iframeVariants = iframeVariants;
+    return stream;
   } else if (segments.length > 0) {
     // Media playlist (no variants)
     log(`Found ${segments.length} segments`);

@@ -29,8 +29,8 @@ import { toMp4, parseHls, thumbnails } from './src/index.js';
 
 const HLS_URL = 'https://api.v3.invintus.com/StreamURI/hls/1000000000/2025101001/media.m3u8';
 const THUMB_COUNT = 14;
-const CONCURRENCIES = [1, 2, 4, 7, 14];
-const RUNS_PER = 2;
+const CONCURRENCIES = [4, 14];
+const RUNS_PER = 3;
 
 const $log = document.getElementById('log');
 const $thumbs = document.getElementById('thumbs');
@@ -71,6 +71,11 @@ async function runBench() {
     const parseTime = performance.now() - t0;
 
     log(`Variant: ${variant.name} (${variant.kbps} kbps)`);
+    log(`I-frame variants: ${stream.iframeVariants?.length || 0}`);
+    if (stream.iframeVariants?.length) {
+      const lowest = [...stream.iframeVariants].sort((a, b) => a.bandwidth - b.bandwidth)[0];
+      log(`I-frame (lowest): ${lowest.name} (${lowest.kbps} kbps) ← will be used by thumbnails()`, 'pass');
+    }
     log(`Duration: ${totalDuration.toFixed(1)}s`);
     log(`Playlist parse: ${parseTime.toFixed(0)}ms`);
     log('');
@@ -158,31 +163,15 @@ async function runBench() {
       log(`  t=${String(time).padEnd(6)} ${String(elapsed.toFixed(0)).padStart(6)}ms ${bar}`);
     }
 
-    // Step 5: Compare against naive sequential approach
     log('');
-    log('--- Naive comparison: 14x individual thumbnail() ---', 'warn');
-    clearThumbs();
-    const naiveStart = performance.now();
-    for (const t of times) {
-      const img = await toMp4.thumbnail(HLS_URL, {
-        time: t,
-        maxWidth: 80,
-        quality: 0.6,
-        hlsQuality: 'lowest',
-        timeoutMs: 30000,
-      });
-      img.revokeURL();
-    }
-    const naiveTotal = performance.now() - naiveStart;
-    log(`14x thumbnail(): ${naiveTotal.toFixed(0)}ms (${(naiveTotal / THUMB_COUNT).toFixed(0)}ms/thumb)`, 'fail');
+    log(`Previous baseline (full segments, v1.6.2): 213ms best @ conc=14`, 'dim');
     log(`thumbnails() @ conc=${bestConc}: ${results[bestConc].best.toFixed(0)}ms (${(results[bestConc].best / THUMB_COUNT).toFixed(0)}ms/thumb)`, 'pass');
-    log(`Speedup: ${(naiveTotal / results[bestConc].best).toFixed(1)}x`, 'pass');
 
     log('');
     log('DONE', 'pass');
 
     // Output machine-readable results for scripting
-    window.__benchResults = { results, naiveTotal, bestConc, times };
+    window.__benchResults = { results, bestConc, times };
     console.log('__benchResults', JSON.stringify(window.__benchResults, null, 2));
 
   } catch (err) {

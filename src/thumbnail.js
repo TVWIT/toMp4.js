@@ -351,42 +351,80 @@ export async function thumbnails(input, options = {}) {
       stream = await parseHls(input);
     }
 
-    // Step 2: Resolve to media segments
+    // Step 2: Resolve to media segments.
+    // Prefer I-frame playlist when available (single keyframe per segment,
+    // ~9KB vs ~280KB, no seeking needed).
     let segments;
-    if (stream.isMaster) {
-      stream.select(hlsQuality);
-      const variant = stream.selected;
-      const resp = await fetch(variant.url);
-      if (!resp.ok) throw new Error(`Failed to fetch media playlist: ${resp.status}`);
+    let isIframeMode = false;
+
+    if (stream.isMaster && stream.iframeVariants && stream.iframeVariants.length > 0) {
+      // Use I-frame playlist — pick lowest bandwidth variant
+      const sorted = [...stream.iframeVariants].sort((a, b) => a.bandwidth - b.bandwidth);
+      const iframeVariant = sorted[0];
+      const resp = await fetch(iframeVariant.url);
+      if (!resp.ok) throw new Error(`Failed to fetch I-frame playlist: ${resp.status}`);
       const text = await resp.text();
-      const parsed = parsePlaylistText(text, variant.url);
+      const parsed = parsePlaylistText(text, iframeVariant.url);
       segments = parsed.segments;
-    } else {
-      segments = stream.segments;
+      isIframeMode = segments.length > 0;
+    }
+
+    if (!isIframeMode) {
+      // Fallback: use regular variant playlist
+      if (stream.isMaster) {
+        stream.select(hlsQuality);
+        const variant = stream.selected;
+        const resp = await fetch(variant.url);
+        if (!resp.ok) throw new Error(`Failed to fetch media playlist: ${resp.status}`);
+        const text = await resp.text();
+        const parsed = parsePlaylistText(text, variant.url);
+        segments = parsed.segments;
+      } else {
+        segments = stream.segments;
+      }
     }
 
     if (!segments || segments.length === 0) {
       throw new Error('No segments found in playlist');
     }
 
-    // Step 3: Group requested times by segment
+    // Step 3: Group requested times by segment.
+    // In I-frame mode each segment is one keyframe, so we snap each time
+    // to the nearest I-frame segment (1:1 mapping, no seeking needed).
+    // In regular mode, multiple times may fall within one segment.
     const sortedTimes = [...times].sort((a, b) => a - b);
     const segmentGroups = new Map();
 
-    for (const t of sortedTimes) {
-      let segIdx = segments.length - 1;
-      for (let i = 0; i < segments.length; i++) {
-        if (t < segments[i].endTime) { segIdx = i; break; }
+    if (isIframeMode) {
+      // Each time maps to the nearest I-frame segment
+      for (const t of sortedTimes) {
+        let bestIdx = 0;
+        let bestDist = Infinity;
+        for (let i = 0; i < segments.length; i++) {
+          const mid = segments[i].startTime + segments[i].duration / 2;
+          const dist = Math.abs(t - mid);
+          if (dist < bestDist) { bestDist = dist; bestIdx = i; }
+        }
+        if (!segmentGroups.has(bestIdx)) {
+          segmentGroups.set(bestIdx, { segment: segments[bestIdx], times: [] });
+        }
+        segmentGroups.get(bestIdx).times.push(t);
       }
-      if (!segmentGroups.has(segIdx)) {
-        segmentGroups.set(segIdx, { segment: segments[segIdx], times: [] });
+    } else {
+      for (const t of sortedTimes) {
+        let segIdx = segments.length - 1;
+        for (let i = 0; i < segments.length; i++) {
+          if (t < segments[i].endTime) { segIdx = i; break; }
+        }
+        if (!segmentGroups.has(segIdx)) {
+          segmentGroups.set(segIdx, { segment: segments[segIdx], times: [] });
+        }
+        segmentGroups.get(segIdx).times.push(t);
       }
-      segmentGroups.get(segIdx).times.push(t);
     }
 
     // Step 4: Prefetch all segments in parallel (network is the bottleneck).
-    // This starts all HTTP requests immediately regardless of concurrency,
-    // so segment data is ready by the time a worker needs it.
+    // In I-frame mode these are ~9KB each; in regular mode ~280KB each.
     const groups = [...segmentGroups.values()];
     const fetchPromises = groups.map(({ segment }) =>
       fetch(segment.url).then(r => {
@@ -458,10 +496,14 @@ export async function thumbnails(input, options = {}) {
             }
 
             for (const t of groupTimes) {
-              const localTime = t - segment.startTime;
-              const dur = Number.isFinite(video.duration) ? video.duration : 0;
-              const safeTime = dur > 0 ? Math.min(localTime, Math.max(0, dur - 0.05)) : localTime;
-              await seek(video, safeTime);
+              // In I-frame mode, each segment is one frame — no seek needed.
+              // In regular mode, seek to the offset within the segment.
+              if (!isIframeMode) {
+                const localTime = t - segment.startTime;
+                const dur = Number.isFinite(video.duration) ? video.duration : 0;
+                const safeTime = dur > 0 ? Math.min(localTime, Math.max(0, dur - 0.05)) : localTime;
+                await seek(video, safeTime);
+              }
 
               ctx.drawImage(video, 0, 0, canvasW, canvasH);
 
