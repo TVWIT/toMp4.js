@@ -25,6 +25,9 @@ jobs:
         id: version
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
+      - name: Build test fixtures
+        run: bash tests/fmp4-samples/build-combined.sh
+
       - name: Run tests
         run: npm test
 
