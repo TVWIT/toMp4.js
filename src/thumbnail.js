@@ -17,7 +17,50 @@
 
 import toMp4 from './index.js';
 import { convertTsToMp4 } from './ts-to-mp4.js';
+import { TSParser } from './parsers/mpegts.js';
+import { MP4Muxer } from './muxers/mp4.js';
 import { parseHls, downloadHls, parsePlaylistText, toAbsoluteUrl } from './hls.js';
+
+const PTS_PER_SECOND = 90000;
+
+// Build a display-order frame timeline from a parsed TS segment.
+// Each entry is { startSec, endSec } describing the frame's display window.
+// The first decoded frame in an HLS segment is an IDR keyframe, which is also
+// first in display order, so after parser.normalizeTimestamps() its pts == 0.
+// That makes pts/90000 the frame's presentation time in the resulting MP4.
+function buildFrameTimeline(parser) {
+  const frames = parser.videoAccessUnits
+    .map((au) => au.pts / PTS_PER_SECOND)
+    .sort((a, b) => a - b);
+  if (frames.length === 0) return [];
+  const timeline = new Array(frames.length);
+  for (let i = 0; i < frames.length - 1; i++) {
+    timeline[i] = { startSec: frames[i], endSec: frames[i + 1] };
+  }
+  // Approximate the last frame's duration with the previous interval.
+  const tail = frames.length >= 2
+    ? frames[frames.length - 1] - frames[frames.length - 2]
+    : 1 / 30;
+  timeline[frames.length - 1] = {
+    startSec: frames[frames.length - 1],
+    endSec: frames[frames.length - 1] + tail,
+  };
+  return timeline;
+}
+
+// Snap-back: the frame whose display window contains targetSec, matching the
+// behavior of MSE/hls.js (largest start ≤ targetSec).
+function pickFrame(timeline, targetSec) {
+  if (timeline.length === 0) return -1;
+  if (targetSec <= timeline[0].startSec) return 0;
+  for (let i = timeline.length - 1; i >= 0; i--) {
+    if (timeline[i].startSec <= targetSec) return i;
+  }
+  return 0;
+}
+
+// Exported for tests; not part of the public API.
+export const __test__ = { buildFrameTimeline, pickFrame };
 
 export class ImageResult {
   constructor(blob, filename = 'thumbnail.jpg') {
@@ -97,6 +140,55 @@ async function seek(video, timeSeconds) {
       resolve();
     }
   });
+}
+
+// Wait for the next painted video frame and return its mediaTime, or null if
+// the browser doesn't support requestVideoFrameCallback (Firefox <130, etc.).
+function nextRenderedFrame(video) {
+  if (typeof video.requestVideoFrameCallback !== 'function') return Promise.resolve(null);
+  return new Promise((resolve) => {
+    let done = false;
+    const t = setTimeout(() => {
+      if (done) return;
+      done = true;
+      resolve(null);
+    }, 250);
+    video.requestVideoFrameCallback((_now, meta) => {
+      if (done) return;
+      done = true;
+      clearTimeout(t);
+      resolve(meta?.mediaTime ?? null);
+    });
+  });
+}
+
+// Seek so that the frame whose display window contains targetSec is the one
+// the browser actually paints. We aim at the middle of the window so floating
+// point and per-browser snap rules don't push us into a neighbor; if rVFC
+// reports a mismatch we nudge once toward the target.
+async function seekToFrame(video, timeline, targetSec) {
+  const dur = Number.isFinite(video.duration) ? video.duration : 0;
+  const clamped = Math.max(0, dur > 0 ? Math.min(targetSec, dur - 1e-3) : targetSec);
+
+  if (!timeline || timeline.length === 0) {
+    await seek(video, clamped);
+    return;
+  }
+
+  const frameIdx = pickFrame(timeline, clamped);
+  const frame = timeline[frameIdx];
+  const aim = (frame.startSec + frame.endSec) / 2;
+  await seek(video, aim);
+
+  const actual = await nextRenderedFrame(video);
+  if (actual == null) return; // rVFC unsupported — trust the seek
+  if (actual >= frame.startSec && actual < frame.endSec) return;
+
+  // Browser snapped to a neighbor. Nudge by a quarter-window toward the target
+  // and re-seek once.
+  const quarter = (frame.endSec - frame.startSec) / 4;
+  const nudge = actual < frame.startSec ? aim + quarter : aim - quarter;
+  await seek(video, Math.max(0, nudge));
 }
 
 /**
@@ -466,8 +558,20 @@ export async function thumbnails(input, options = {}) {
           // Wait for this segment's prefetch to complete
           const buf = await fetchPromises[idx];
 
-          // Transmux TS → MP4 directly (skip format detection + progress overhead)
-          const mp4Data = convertTsToMp4(new Uint8Array(buf));
+          // Drive the parser ourselves so we get the per-frame PTS timeline
+          // alongside the MP4 bytes. In I-frame mode the segment is a single
+          // keyframe and we don't need it.
+          let timeline = null;
+          let mp4Data;
+          if (isIframeMode) {
+            mp4Data = convertTsToMp4(new Uint8Array(buf));
+          } else {
+            const parser = new TSParser();
+            parser.parse(new Uint8Array(buf));
+            parser.finalize();
+            timeline = buildFrameTimeline(parser);
+            mp4Data = new MP4Muxer(parser).build();
+          }
           const blob = new Blob([mp4Data], { type: 'video/mp4' });
           const mediaUrl = URL.createObjectURL(blob);
 
@@ -497,12 +601,10 @@ export async function thumbnails(input, options = {}) {
 
             for (const t of groupTimes) {
               // In I-frame mode, each segment is one frame — no seek needed.
-              // In regular mode, seek to the offset within the segment.
+              // In regular mode, pick the exact frame ourselves and seek inside
+              // its display window so the browser snap is deterministic.
               if (!isIframeMode) {
-                const localTime = t - segment.startTime;
-                const dur = Number.isFinite(video.duration) ? video.duration : 0;
-                const safeTime = dur > 0 ? Math.min(localTime, Math.max(0, dur - 0.05)) : localTime;
-                await seek(video, safeTime);
+                await seekToFrame(video, timeline, t - segment.startTime);
               }
 
               ctx.drawImage(video, 0, 0, canvasW, canvasH);

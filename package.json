@@ -1,6 +1,6 @@
 {
   "name": "@invintusmedia/tomp4",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "description": "Convert MPEG-TS, fMP4, and HLS streams to MP4 with clipping support - pure JavaScript, zero dependencies",
   "main": "src/index.js",
   "module": "src/index.js",
@@ -20,9 +20,10 @@
   "scripts": {
     "build": "node build.js",
     "dev": "npx serve . -p 3000",
-    "test": "npm run test:hls-map && npm run test:thumbnail && npm run test:clip && npm run test:mp4 && npm run test:av-sync && npm run test:mp4-clip",
+    "test": "npm run test:hls-map && npm run test:thumbnail && npm run test:thumbnail-pick && npm run test:clip && npm run test:mp4 && npm run test:av-sync && npm run test:mp4-clip",
     "test:hls-map": "node tests/hls-map.test.js",
     "test:thumbnail": "node tests/thumbnail.node.test.js",
+    "test:thumbnail-pick": "node tests/thumbnail-frame-pick.test.js",
     "test:clip": "node tests/clip.test.js",
     "test:fmp4-clip": "node tests/fmp4-clip.test.js",
     "test:av-sync": "node tests/av-sync.test.js",
