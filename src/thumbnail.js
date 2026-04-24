@@ -418,6 +418,12 @@ async function captureFrame(video, timeSeconds, { maxWidth, mimeType, quality })
  * @param {string} [options.hlsQuality='lowest'] - Variant selection
  * @param {number} [options.concurrency=4] - Max segments fetched in parallel
  * @param {function} [options.onThumbnail] - Called as each thumbnail completes: (time, imageResult) => void
+ * @param {boolean} [options.accurate=false] - If true, always fetch full media
+ *   segments and extract the exact frame at each requested time. Use this
+ *   when you need the thumbnail to match what the player shows at time `t`
+ *   (scene descriptions, title cards, etc.). Default prefers the I-frame
+ *   playlist when one exists — faster, but snaps to the nearest keyframe,
+ *   which can be several seconds away from the requested time.
  * @returns {Promise<Map<number, ImageResult>>}
  */
 export async function thumbnails(input, options = {}) {
@@ -432,6 +438,7 @@ export async function thumbnails(input, options = {}) {
     hlsQuality = 'lowest',
     concurrency = 4,
     onThumbnail,
+    accurate = false,
   } = options;
 
   if (!times || !times.length) return new Map();
@@ -449,7 +456,7 @@ export async function thumbnails(input, options = {}) {
     let segments;
     let isIframeMode = false;
 
-    if (stream.isMaster && stream.iframeVariants && stream.iframeVariants.length > 0) {
+    if (!accurate && stream.isMaster && stream.iframeVariants && stream.iframeVariants.length > 0) {
       // Use I-frame playlist — pick lowest bandwidth variant
       const sorted = [...stream.iframeVariants].sort((a, b) => a.bandwidth - b.bandwidth);
       const iframeVariant = sorted[0];

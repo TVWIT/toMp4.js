@@ -95,6 +95,14 @@ declare module '@invintusmedia/tomp4' {
     concurrency?: number;
     /** Called as each thumbnail completes */
     onThumbnail?: (time: number, image: ImageResult) => void;
+    /**
+     * If true, always fetch full media segments and extract the exact frame
+     * at each requested time. Use this when the thumbnail must match what
+     * the player shows at time `t` (e.g. scene descriptions, title cards).
+     * Default (`false`) prefers the I-frame playlist when available — faster
+     * but snaps to the nearest keyframe, which can be several seconds off.
+     */
+    accurate?: boolean;
   }
 
   export class ImageResult {
