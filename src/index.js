@@ -30,7 +30,7 @@
  * NOT SUPPORTED: MPEG-1/2 Video, MP3, AC-3 (require transcoding)
  */
 
-import { convertTsToMp4, analyzeTsData } from './ts-to-mp4.js';
+import { convertTsToMp4, convertTsToMp4WithSeparateAudio, analyzeTsData } from './ts-to-mp4.js';
 import { convertFmp4ToMp4, stitchFmp4 } from './fmp4/index.js';
 import { clipMp4 } from './mp4-clip.js';
 import { clipHls, HlsClipResult } from './hls-clip.js';
@@ -174,6 +174,17 @@ function detectFormat(data) {
 function convertData(data, options = {}) {
   const uint8 = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
   const format = detectFormat(uint8);
+
+  // Demuxed HLS audio: downloadHls attaches a separate audio-only buffer when
+  // the variant references an #EXT-X-MEDIA:TYPE=AUDIO group. Mux it as a second
+  // track (otherwise the output is silent). MPEG-TS video + MPEG-TS audio today.
+  const audioData = data._hlsAudioData;
+  if (audioData && format === 'mpegts') {
+    const audio = audioData instanceof ArrayBuffer ? new Uint8Array(audioData) : audioData;
+    if (isMpegTs(audio)) {
+      return convertTsToMp4WithSeparateAudio(uint8, audio, options);
+    }
+  }
 
   switch (format) {
     case 'mpegts':
@@ -347,6 +358,7 @@ export {
   toMp4,
   Mp4Result,
   convertTsToMp4,
+  convertTsToMp4WithSeparateAudio,
   convertFmp4ToMp4,
   clipMp4,
   clipHls,

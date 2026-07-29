@@ -7,12 +7,15 @@
  * Represents a quality variant in an HLS stream
  */
 class HlsVariant {
-  constructor({ bandwidth, resolution, codecs, url, name }) {
+  constructor({ bandwidth, resolution, codecs, url, name, audioGroup = null }) {
     this.bandwidth = bandwidth;
     this.resolution = resolution;
     this.codecs = codecs;
     this.url = url;
     this.name = name || this._generateName();
+    // GROUP-ID of the demuxed audio rendition this variant references (AUDIO="...").
+    // null when audio is muxed into the variant's own segments.
+    this.audioGroup = audioGroup;
   }
 
   _generateName() {
@@ -40,6 +43,9 @@ class HlsStream {
     this.masterUrl = masterUrl;
     this.variants = variants;
     this.iframeVariants = [];
+    // Demuxed audio renditions (#EXT-X-MEDIA:TYPE=AUDIO with a URI). Empty when
+    // the master carries no separate audio group (audio muxed into variants).
+    this.audioRenditions = [];
     this.segments = segments;
     this._selectedVariant = null;
   }
@@ -127,6 +133,7 @@ function parsePlaylistText(text, baseUrl) {
   const lines = text.split('\n').map(l => l.trim());
   const variants = [];
   const iframeVariants = [];
+  const audioRenditions = [];
   const segments = [];
   let initSegmentUrl = null;
   let currentDuration = 0;
@@ -142,6 +149,7 @@ function parsePlaylistText(text, baseUrl) {
       const bandwidth = parseInt(attrs.match(/BANDWIDTH=(\d+)/)?.[1] || '0');
       const resolution = attrs.match(/RESOLUTION=(\d+x\d+)/)?.[1] || null;
       const codecs = attrs.match(/CODECS="([^"]+)"/)?.[1] || null;
+      const audioGroup = attrs.match(/AUDIO="([^"]+)"/)?.[1] || null;
 
       // Next non-comment line is the URL
       let urlLine = lines[i + 1];
@@ -150,8 +158,27 @@ function parsePlaylistText(text, baseUrl) {
           bandwidth,
           resolution,
           codecs,
+          audioGroup,
           url: toAbsoluteUrl(urlLine, baseUrl)
         }));
+      }
+    }
+
+    // Parse a demuxed audio rendition (separate audio group).
+    // Example: #EXT-X-MEDIA:TYPE=AUDIO,URI="audio/playlist.m3u8",GROUP-ID="aac",DEFAULT=YES
+    // Only renditions WITH a URI are separate playlists; a URI-less entry means
+    // the audio is already muxed into the video variant's segments.
+    if (line.startsWith('#EXT-X-MEDIA:') && /TYPE=AUDIO/.test(line)) {
+      const uri = line.match(/URI="([^"]+)"/)?.[1];
+      if (uri) {
+        audioRenditions.push({
+          groupId: line.match(/GROUP-ID="([^"]+)"/)?.[1] || null,
+          name: line.match(/NAME="([^"]+)"/)?.[1] || null,
+          language: line.match(/LANGUAGE="([^"]+)"/)?.[1] || null,
+          isDefault: /DEFAULT=YES/.test(line),
+          autoselect: /AUTOSELECT=YES/.test(line),
+          url: toAbsoluteUrl(uri, baseUrl)
+        });
       }
     }
 
@@ -202,7 +229,7 @@ function parsePlaylistText(text, baseUrl) {
     }
   }
 
-  return { variants, iframeVariants, segments, initSegmentUrl };
+  return { variants, iframeVariants, audioRenditions, segments, initSegmentUrl };
 }
 
 /**
@@ -224,13 +251,14 @@ async function parseHls(url, options = {}) {
   }
   
   const text = await response.text();
-  const { variants, iframeVariants, segments, initSegmentUrl } = parsePlaylistText(text, url);
+  const { variants, iframeVariants, audioRenditions, segments, initSegmentUrl } = parsePlaylistText(text, url);
 
   if (variants.length > 0) {
     // Master playlist
     log(`Found ${variants.length} quality variants`);
     const stream = new HlsStream(url, variants);
     stream.iframeVariants = iframeVariants;
+    stream.audioRenditions = audioRenditions;
     return stream;
   } else if (segments.length > 0) {
     // Media playlist (no variants)
@@ -244,8 +272,67 @@ async function parseHls(url, options = {}) {
 }
 
 /**
+ * Download and concatenate the segments of a single media playlist into one
+ * buffer (with the same time-range/maxSegments filtering as the video path).
+ * Used to pull a demuxed audio rendition alongside the video variant.
+ *
+ * @param {string} mediaUrl - Audio media playlist URL
+ * @param {object} options - startTime/endTime/maxSegments
+ * @returns {Promise<Uint8Array>} Combined audio segment data (init prepended if CMAF)
+ */
+async function downloadMediaSegments(mediaUrl, options = {}) {
+  const resp = await fetch(mediaUrl);
+  if (!resp.ok) throw new Error(`Failed to fetch audio playlist: ${resp.status}`);
+  const { segments, initSegmentUrl } = parsePlaylistText(await resp.text(), mediaUrl);
+  if (!segments || segments.length === 0) throw new Error('Audio rendition has no segments');
+
+  let toDownload = segments;
+  if (options.startTime !== undefined || options.endTime !== undefined) {
+    const startTime = options.startTime || 0;
+    const endTime = options.endTime !== undefined ? options.endTime : Infinity;
+    toDownload = segments.filter(seg => seg.endTime > startTime && seg.startTime < endTime);
+  }
+  if (options.maxSegments && toDownload.length > options.maxSegments) {
+    toDownload = toDownload.slice(0, options.maxSegments);
+  }
+
+  const buffers = await Promise.all(toDownload.map(async (seg) => {
+    const r = await fetch(seg.url || seg);
+    if (!r.ok) throw new Error(`Audio segment failed: ${r.status}`);
+    return new Uint8Array(await r.arrayBuffer());
+  }));
+
+  let initBytes = null;
+  if (initSegmentUrl) {
+    const ir = await fetch(initSegmentUrl);
+    if (!ir.ok) throw new Error(`Audio init segment failed: ${ir.status}`);
+    initBytes = new Uint8Array(await ir.arrayBuffer());
+  }
+
+  const total = buffers.reduce((s, b) => s + b.length, 0) + (initBytes ? initBytes.length : 0);
+  const combined = new Uint8Array(total);
+  let o = 0;
+  if (initBytes) { combined.set(initBytes, o); o += initBytes.length; }
+  for (const b of buffers) { combined.set(b, o); o += b.length; }
+  return combined;
+}
+
+/**
+ * Pick the audio rendition a variant references (by GROUP-ID), falling back to
+ * the DEFAULT rendition, then the first. Returns null when there is no group.
+ */
+function resolveAudioRendition(stream, variant) {
+  const renditions = stream.audioRenditions;
+  if (!renditions || renditions.length === 0) return null;
+  const grp = variant && variant.audioGroup;
+  return renditions.find(a => grp && a.groupId === grp)
+      || renditions.find(a => a.isDefault)
+      || renditions[0];
+}
+
+/**
  * Download segments from an HLS stream
- * 
+ *
  * @param {HlsStream|string} source - HlsStream object or URL
  * @param {object} [options] - Options
  * @param {string|number} [options.quality] - 'highest', 'lowest', or bandwidth number
@@ -370,7 +457,22 @@ async function downloadHls(source, options = {}) {
     actualStart: toDownload[0]?.startTime || 0,
     actualEnd: toDownload[toDownload.length - 1]?.endTime || 0
   } : null;
-  
+
+  // If the selected variant references a demuxed audio group, pull it too and
+  // attach it so the converter can mux it as a second track. Video-only HLS
+  // (as inv-stream produces) is silent without this.
+  if (stream.isMaster && stream.selected) {
+    const rendition = resolveAudioRendition(stream, stream.selected);
+    if (rendition) {
+      log(`Fetching demuxed audio group: ${rendition.name || rendition.groupId || 'audio'}...`);
+      try {
+        combined._hlsAudioData = await downloadMediaSegments(rendition.url, options);
+      } catch (e) {
+        log(`Audio rendition fetch failed (${e.message}); continuing video-only`);
+      }
+    }
+  }
+
   return combined;
 }
 
@@ -385,12 +487,14 @@ function isHlsUrl(url) {
   return lower.includes('.m3u8') || lower.includes('format=m3u8');
 }
 
-export { 
-  HlsStream, 
-  HlsVariant, 
+export {
+  HlsStream,
+  HlsVariant,
   HlsSegment,
-  parseHls, 
-  downloadHls, 
+  parseHls,
+  downloadHls,
+  downloadMediaSegments,
+  resolveAudioRendition,
   isHlsUrl,
   parsePlaylistText,
   toAbsoluteUrl

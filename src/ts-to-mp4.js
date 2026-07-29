@@ -122,8 +122,58 @@ function clipAccessUnits(videoAUs, audioAUs, startTime, endTime) {
 }
 
 /**
+ * Collapse discontinuity gaps in the video timeline.
+ *
+ * An edited HLS asset (e.g. inv-stream cuts) keeps absolute source PTS with an
+ * EXT-X-DISCONTINUITY at each removed span, so consecutive kept frames can jump
+ * by seconds. The MP4 video sample table derives each frame's duration from
+ * `dts[i+1]-dts[i]`, turning that jump into a multi-second frozen frame (and
+ * desyncing against audio, whose samples lay back-to-back at a fixed rate).
+ *
+ * This walks the video access units and, wherever the inter-frame gap far
+ * exceeds a normal frame, shifts that frame and everything after it back so the
+ * timeline is continuous — matching audio. A no-op on gapless streams.
+ *
+ * @param {TSParser} parser - finalized (normalized) parser
+ * @returns {number} number of discontinuities collapsed
+ */
+export function collapseVideoDiscontinuities(parser) {
+  const aus = parser.videoAccessUnits;
+  if (!aus || aus.length < 2) return 0;
+
+  const origDts = parser.videoDts.slice();
+  const deltas = [];
+  for (let i = 1; i < origDts.length; i++) {
+    const d = origDts[i] - origDts[i - 1];
+    if (d > 0) deltas.push(d);
+  }
+  if (deltas.length === 0) return 0;
+  const sorted = deltas.sort((a, b) => a - b);
+  const frameDur = sorted[Math.floor(sorted.length / 2)] || 3000; // 90kHz ticks
+  // Only collapse gaps well beyond a normal frame AND at least ~0.5s, so real
+  // frame-rate jitter is never touched.
+  const GAP_THRESHOLD = Math.max(frameDur * 4, 45000);
+
+  let shift = 0, collapsed = 0;
+  for (let i = 1; i < aus.length; i++) {
+    const delta = origDts[i] - origDts[i - 1];
+    if (delta > GAP_THRESHOLD) {
+      shift += delta - frameDur; // leave one nominal frame between the two sides
+      collapsed++;
+    }
+    if (shift > 0) {
+      aus[i].dts -= shift;
+      aus[i].pts -= shift;
+      parser.videoDts[i] -= shift;
+      parser.videoPts[i] -= shift;
+    }
+  }
+  return collapsed;
+}
+
+/**
  * Convert MPEG-TS data to MP4
- * 
+ *
  * @param {Uint8Array} tsData - MPEG-TS data
  * @param {object} options - Optional settings
  * @param {function} options.onProgress - Progress callback
@@ -185,6 +235,61 @@ export function convertTsToMp4(tsData, options = {}) {
   const parser = new TSParser();
   parser.parse(tsData);
   parser.finalize();
+
+  return muxFromParser(parser, options);
+}
+
+/**
+ * Convert MPEG-TS with a SEPARATE (demuxed) audio track to MP4.
+ *
+ * HLS commonly delivers audio as its own rendition (`#EXT-X-MEDIA:TYPE=AUDIO`),
+ * so the video variant's segments are video-only. This parses each stream, then
+ * merges the audio track into the video parser and normalizes BOTH against a
+ * shared base PTS — they share one 90kHz program clock, so relative A/V timing
+ * is preserved (verified: same domain). Without this, such HLS muxes silent.
+ *
+ * @param {Uint8Array} videoTs - Video-only MPEG-TS
+ * @param {Uint8Array} audioTs - Audio-only MPEG-TS (same source timeline)
+ * @param {object} options - Same options as convertTsToMp4
+ * @returns {Uint8Array} MP4 data
+ */
+export function convertTsToMp4WithSeparateAudio(videoTs, audioTs, options = {}) {
+  const log = options.onProgress || (() => { });
+
+  log(`Parsing video...`, { phase: 'convert', percent: 52 });
+  const parser = new TSParser();
+  parser.parse(videoTs);
+  parser.finalize({ normalize: false });
+
+  log(`Parsing audio...`, { phase: 'convert', percent: 54 });
+  const audioParser = new TSParser();
+  audioParser.parse(audioTs);
+  audioParser.finalize({ normalize: false });
+
+  // Graft the audio track onto the video parser.
+  parser.audioAccessUnits = audioParser.audioAccessUnits;
+  parser.audioPts = audioParser.audioPts;
+  parser.audioStreamType = audioParser.audioStreamType;
+  parser.audioSampleRate = audioParser.audioSampleRate;
+  parser.audioChannels = audioParser.audioChannels;
+  parser.audioPid = audioParser.audioPid;
+  parser.debug.audioPesStarts = audioParser.debug.audioPesStarts;
+  parser.debug.audioPesCount = audioParser.debug.audioPesCount;
+  parser.debug.audioFramesInPes = audioParser.debug.audioFramesInPes;
+  parser.debug.audioSkipped = audioParser.debug.audioSkipped;
+
+  // Now normalize video+audio together against one shared base PTS.
+  parser.normalizeTimestamps();
+
+  return muxFromParser(parser, options);
+}
+
+/**
+ * Build an MP4 from a finalized (parsed + normalized) TSParser.
+ * Shared by the muxed and separate-audio conversion paths.
+ */
+function muxFromParser(parser, options = {}) {
+  const log = options.onProgress || (() => { });
 
   const debug = parser.debug;
   const videoInfo = getCodecInfo(parser.videoStreamType);
@@ -250,6 +355,13 @@ export function convertTsToMp4(tsData, options = {}) {
   }
 
   log(`Processing...`, { phase: 'convert', percent: 70 });
+
+  // Collapse any discontinuity gaps (edited timelines) so video stays
+  // continuous and in sync with audio. No-op on gapless streams.
+  const collapsed = collapseVideoDiscontinuities(parser);
+  if (collapsed > 0) {
+    log(`Collapsed ${collapsed} discontinuity gap${collapsed > 1 ? 's' : ''} in video timeline`);
+  }
 
   // Track preroll for edit list (used for precise clipping)
   let clipPreroll = 0;

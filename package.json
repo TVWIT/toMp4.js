@@ -20,8 +20,10 @@
   "scripts": {
     "build": "node build.js",
     "dev": "npx serve . -p 3000",
-    "test": "npm run test:hls-map && npm run test:thumbnail && npm run test:thumbnail-pick && npm run test:clip && npm run test:mp4 && npm run test:av-sync && npm run test:mp4-clip",
+    "test": "npm run test:hls-map && npm run test:hls-audio-group && npm run test:discontinuity && npm run test:thumbnail && npm run test:thumbnail-pick && npm run test:clip && npm run test:mp4 && npm run test:av-sync && npm run test:mp4-clip",
     "test:hls-map": "node tests/hls-map.test.js",
+    "test:hls-audio-group": "node tests/hls-audio-group.test.js",
+    "test:discontinuity": "node tests/discontinuity.test.js",
     "test:thumbnail": "node tests/thumbnail.node.test.js",
     "test:thumbnail-pick": "node tests/thumbnail-frame-pick.test.js",
     "test:clip": "node tests/clip.test.js",
