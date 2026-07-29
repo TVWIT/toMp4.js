@@ -43,7 +43,7 @@ import { TSParser } from './parsers/mpegts.js';
 import { MP4Parser } from './parsers/mp4.js';
 import { RemoteMp4 } from './remote/index.js';
 import { thumbnail, thumbnails, ImageResult } from './thumbnail.js';
-import { Mp3Encoder, encodeMp3, audioToMp3, streamMp3, Mp3Result } from './mp3/index.js';
+import { Mp3Encoder, encodeMp3, audioToMp3, streamMp3, hlsAudioToMp3, Mp3Result } from './mp3/index.js';
 import { streamFmp4SeparateAudio, streamHlsToMp4 } from './stream/mp4.js';
 import { ArrayBufferTarget, FileSystemWritableTarget, canStreamToDisk, pickDownloadTarget } from './stream/target.js';
 
@@ -353,6 +353,7 @@ toMp4.thumbnails = thumbnails;
 toMp4.Mp3Encoder = Mp3Encoder;
 toMp4.encodeMp3 = encodeMp3;      // raw PCM -> MP3 (works everywhere)
 toMp4.audioToMp3 = audioToMp3;    // M4A/AAC bytes -> MP3 (browser: Web Audio decode)
+toMp4.hlsAudioToMp3 = hlsAudioToMp3; // HLS master -> audio-only MP3 (browser)
 toMp4.streamMp3 = streamMp3;      // PCM -> MP3, written to a StreamTarget
 
 // Streaming to disk (large downloads without buffering the whole file)
@@ -417,6 +418,7 @@ export {
   encodeMp3,
   audioToMp3,
   streamMp3,
+  hlsAudioToMp3,
   Mp3Result,
   // Streaming to disk
   streamFmp4SeparateAudio,

@@ -124,4 +124,30 @@ export async function audioToMp3(audioData, opts = {}) {
   return encodeMp3(channels.length === 2 ? channels : channels[0], { sampleRate: sr, bitRate: opts.bitRate || 128, filename: opts.filename });
 }
 
+/**
+ * Extract the audio of a demuxed-CMAF HLS master and encode it to MP3.
+ * Browser-only (decode uses Web Audio). Resolves the variant's #EXT-X-MEDIA
+ * audio rendition, muxes it to an M4A, decodes, and encodes.
+ * @param {string} masterUrl
+ * @param {object} [opts] - { bitRate=128, quality, filename }
+ * @returns {Promise<Mp3Result>}
+ */
+export async function hlsAudioToMp3(masterUrl, opts = {}) {
+  const { parseHls, parsePlaylistText, resolveAudioRendition } = await import('../hls.js');
+  const { convertFmp4ToMp4 } = await import('../fmp4/index.js');
+  const stream = await parseHls(masterUrl, opts);
+  if (opts.quality) stream.select(opts.quality);
+  const audio = resolveAudioRendition(stream, stream.selected);
+  if (!audio) throw new Error('hlsAudioToMp3: no demuxed audio rendition found');
+  const media = parsePlaylistText(await (await fetch(audio.url)).text(), audio.url);
+  const bufs = [];
+  if (media.initSegmentUrl) bufs.push(new Uint8Array(await (await fetch(media.initSegmentUrl)).arrayBuffer()));
+  for (const seg of media.segments) bufs.push(new Uint8Array(await (await fetch(seg.url)).arrayBuffer()));
+  const total = bufs.reduce((s, b) => s + b.length, 0);
+  const audioFmp4 = new Uint8Array(total);
+  let o = 0; for (const b of bufs) { audioFmp4.set(b, o); o += b.length; }
+  const m4a = convertFmp4ToMp4(audioFmp4);         // audio-only M4A
+  return audioToMp3(m4a, { bitRate: opts.bitRate || 128, filename: opts.filename || 'audio.mp3' });
+}
+
 export { Mp3Encoder };
