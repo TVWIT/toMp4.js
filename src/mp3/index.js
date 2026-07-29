@@ -56,6 +56,35 @@ export function encodeMp3(channels, opts = {}) {
 }
 
 /**
+ * Encode PCM to MP3, writing each frame to a StreamTarget as it is produced
+ * (never holding the whole MP3 in memory). MP3 frames are self-contained, so
+ * this is exact — the bytes are identical to encodeMp3().
+ * @param {Int16Array|Float32Array|Array} channels - one channel, or [L,R]
+ * @param {StreamTarget} target
+ * @param {object} [opts] - { sampleRate=48000, bitRate=128 }
+ */
+export async function streamMp3(channels, target, opts = {}) {
+  const sampleRate = opts.sampleRate || 48000;
+  const bitRate = opts.bitRate || 128;
+  const chans = Array.isArray(channels) && (channels[0] instanceof Int16Array || channels[0] instanceof Float32Array)
+    ? channels.map(toInt16)
+    : [toInt16(channels)];
+  const nCh = chans.length;
+  const enc = new Mp3Encoder(nCh, sampleRate, bitRate);
+  const n = chans[0].length;
+  const CHUNK = 1152 * 8; // encode several frames per pull
+  for (let i = 0; i < n; i += CHUNK) {
+    const frames = nCh === 2
+      ? enc.encodeBuffer(chans[0].subarray(i, i + CHUNK), chans[1].subarray(i, i + CHUNK))
+      : enc.encodeBuffer(chans[0].subarray(i, i + CHUNK));
+    if (frames.length) await target.write(frames);
+  }
+  const tail = enc.flush();
+  if (tail.length) await target.write(tail);
+  await target.close();
+}
+
+/**
  * Decode a compressed-audio file (M4A/AAC/etc.) to PCM channels via Web Audio.
  * Browser-only. Returns { channels: Float32Array[], sampleRate }.
  */

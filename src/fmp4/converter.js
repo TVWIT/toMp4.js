@@ -916,7 +916,7 @@ function updateStcoOffsets(output, ftypSize, moovSize) {
  * @param {number} [options.endTime] - Clip end time (seconds)
  * @returns {Uint8Array} Standard MP4 data
  */
-// Shared rebuild functions — also used by mp4-clip.js for standard MP4 clipping
+// Shared rebuild functions — also used by mp4-clip.js and the streaming muxer
 export {
     applyClipToTracks,
     rebuildMdatContent,
@@ -924,6 +924,12 @@ export {
     rebuildTrak,
     rebuildMvhd,
     updateStcoOffsets,
+    extractTrackMetadata,
+    extractTrexDefaults,
+    collectTrackSamples,
+    alignSeparateTracks,
+    cloneTrakWithId,
+    readTrakId,
 };
 
 export function convertFmp4ToMp4(fmp4Data, options = {}) {
