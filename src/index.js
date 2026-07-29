@@ -43,6 +43,7 @@ import { TSParser } from './parsers/mpegts.js';
 import { MP4Parser } from './parsers/mp4.js';
 import { RemoteMp4 } from './remote/index.js';
 import { thumbnail, thumbnails, ImageResult } from './thumbnail.js';
+import { Mp3Encoder, encodeMp3, audioToMp3, Mp3Result } from './mp3/index.js';
 
 /**
  * Result object returned by toMp4()
@@ -346,6 +347,11 @@ toMp4.isWebCodecsSupported = isWebCodecsSupported;
 toMp4.thumbnail = thumbnail;
 toMp4.thumbnails = thumbnails;
 
+// MP3 encoding (from-scratch MPEG-1/2 Layer III)
+toMp4.Mp3Encoder = Mp3Encoder;
+toMp4.encodeMp3 = encodeMp3;      // raw PCM -> MP3 (works everywhere)
+toMp4.audioToMp3 = audioToMp3;    // M4A/AAC bytes -> MP3 (browser: Web Audio decode)
+
 // Parsers
 toMp4.MP4Parser = MP4Parser;
 toMp4.TSParser = TSParser;
@@ -394,6 +400,11 @@ export {
   TSParser,
   MP4Parser,
   // Remote MP4 (on-demand HLS)
-  RemoteMp4
+  RemoteMp4,
+  // MP3 encoding
+  Mp3Encoder,
+  encodeMp3,
+  audioToMp3,
+  Mp3Result
 };
 export default toMp4;
