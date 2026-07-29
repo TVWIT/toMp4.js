@@ -31,7 +31,7 @@
  */
 
 import { convertTsToMp4, convertTsToMp4WithSeparateAudio, analyzeTsData } from './ts-to-mp4.js';
-import { convertFmp4ToMp4, stitchFmp4 } from './fmp4/index.js';
+import { convertFmp4ToMp4, convertFmp4WithSeparateAudio, stitchFmp4 } from './fmp4/index.js';
 import { clipMp4 } from './mp4-clip.js';
 import { clipHls, HlsClipResult } from './hls-clip.js';
 import { stitchTs, concatTs } from './mpegts/index.js';
@@ -179,10 +179,13 @@ function convertData(data, options = {}) {
   // the variant references an #EXT-X-MEDIA:TYPE=AUDIO group. Mux it as a second
   // track (otherwise the output is silent). MPEG-TS video + MPEG-TS audio today.
   const audioData = data._hlsAudioData;
-  if (audioData && format === 'mpegts') {
+  if (audioData) {
     const audio = audioData instanceof ArrayBuffer ? new Uint8Array(audioData) : audioData;
-    if (isMpegTs(audio)) {
+    if (format === 'mpegts' && isMpegTs(audio)) {
       return convertTsToMp4WithSeparateAudio(uint8, audio, options);
+    }
+    if (format === 'fmp4' && isFmp4(audio)) {
+      return convertFmp4WithSeparateAudio(uint8, audio, options);
     }
   }
 
@@ -360,6 +363,7 @@ export {
   convertTsToMp4,
   convertTsToMp4WithSeparateAudio,
   convertFmp4ToMp4,
+  convertFmp4WithSeparateAudio,
   clipMp4,
   clipHls,
   HlsClipResult,
