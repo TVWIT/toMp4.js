@@ -44,7 +44,7 @@ import { MP4Parser } from './parsers/mp4.js';
 import { RemoteMp4 } from './remote/index.js';
 import { thumbnail, thumbnails, ImageResult } from './thumbnail.js';
 import { Mp3Encoder, encodeMp3, audioToMp3, streamMp3, Mp3Result } from './mp3/index.js';
-import { streamFmp4SeparateAudio } from './stream/mp4.js';
+import { streamFmp4SeparateAudio, streamHlsToMp4 } from './stream/mp4.js';
 import { ArrayBufferTarget, FileSystemWritableTarget, canStreamToDisk, pickDownloadTarget } from './stream/target.js';
 
 /**
@@ -357,6 +357,7 @@ toMp4.streamMp3 = streamMp3;      // PCM -> MP3, written to a StreamTarget
 
 // Streaming to disk (large downloads without buffering the whole file)
 toMp4.streamFmp4SeparateAudio = streamFmp4SeparateAudio;
+toMp4.streamHlsToMp4 = streamHlsToMp4;  // HLS master -> MP4 on disk (lazy fetch)
 toMp4.ArrayBufferTarget = ArrayBufferTarget;
 toMp4.FileSystemWritableTarget = FileSystemWritableTarget;
 toMp4.canStreamToDisk = canStreamToDisk;
@@ -419,6 +420,7 @@ export {
   Mp3Result,
   // Streaming to disk
   streamFmp4SeparateAudio,
+  streamHlsToMp4,
   ArrayBufferTarget,
   FileSystemWritableTarget,
   canStreamToDisk,

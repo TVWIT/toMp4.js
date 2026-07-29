@@ -10,6 +10,7 @@
  * duration-based). The output is a standard, widely-playable MP4.
  */
 import { parseBoxes, findBox, parseChildBoxes, createBox, getMovieTimescale } from '../fmp4/utils.js';
+import { parseHls, parsePlaylistText, resolveAudioRendition } from '../hls.js';
 import {
   extractTrackMetadata, extractTrexDefaults, collectTrackSamples,
   alignSeparateTracks, cloneTrakWithId, readTrakId,
@@ -133,4 +134,43 @@ export async function streamFmp4SeparateAudio(src, target, options = {}) {
   await target.close();
   log('complete', { phase: 'done' });
   return { bytes: mdatEnd + moov.length, tracks: combined.size };
+}
+
+async function fetchBytes(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`fetch ${url}: ${r.status}`);
+  return new Uint8Array(await r.arrayBuffer());
+}
+async function* lazySegments(segments) {
+  // fetch one segment at a time so only the current segment is resident
+  for (const seg of segments) yield await fetchBytes(seg.url || seg);
+}
+
+/**
+ * Stream a demuxed-CMAF HLS master straight to a StreamTarget as an MP4,
+ * fetching segments lazily (bounded memory). Video variant is highest quality;
+ * audio is the variant's referenced #EXT-X-MEDIA rendition.
+ * @param {string} masterUrl
+ * @param {StreamTarget} target
+ * @param {object} [options] - { quality, onProgress }
+ */
+export async function streamHlsToMp4(masterUrl, target, options = {}) {
+  const stream = await parseHls(masterUrl, options);
+  if (options.quality) stream.select(options.quality);
+  const variant = stream.selected;
+  if (!variant) throw new Error('streamHlsToMp4: no variant in master playlist');
+  const audio = resolveAudioRendition(stream, variant);
+  if (!audio) throw new Error('streamHlsToMp4: no demuxed audio rendition (this path is for CMAF with a separate audio group)');
+
+  const vMedia = parsePlaylistText(await (await fetch(variant.url)).text(), variant.url);
+  const aMedia = parsePlaylistText(await (await fetch(audio.url)).text(), audio.url);
+  if (!vMedia.initSegmentUrl || !aMedia.initSegmentUrl) {
+    throw new Error('streamHlsToMp4: expected CMAF (EXT-X-MAP init segments) on both renditions');
+  }
+  const [videoInit, audioInit] = await Promise.all([fetchBytes(vMedia.initSegmentUrl), fetchBytes(aMedia.initSegmentUrl)]);
+  return streamFmp4SeparateAudio({
+    videoInit, audioInit,
+    videoSegments: lazySegments(vMedia.segments),
+    audioSegments: lazySegments(aMedia.segments),
+  }, target, options);
 }
