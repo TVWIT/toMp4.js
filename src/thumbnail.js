@@ -17,6 +17,7 @@
 
 import toMp4 from './index.js';
 import { convertTsToMp4 } from './ts-to-mp4.js';
+import { stitchFmp4 } from './fmp4/index.js';
 import { TSParser } from './parsers/mpegts.js';
 import { MP4Muxer } from './muxers/mp4.js';
 import { parseHls, downloadHls, parsePlaylistText, toAbsoluteUrl } from './hls.js';
@@ -455,6 +456,9 @@ export async function thumbnails(input, options = {}) {
     // ~9KB vs ~280KB, no seeking needed).
     let segments;
     let isIframeMode = false;
+    // EXT-X-MAP init segment URL — set when the media is fMP4/CMAF (`.m4s`),
+    // in which case each fragment is only decodable stitched onto this init.
+    let initSegmentUrl = null;
 
     if (!accurate && stream.isMaster && stream.iframeVariants && stream.iframeVariants.length > 0) {
       // Use I-frame playlist — pick lowest bandwidth variant
@@ -464,8 +468,12 @@ export async function thumbnails(input, options = {}) {
       if (!resp.ok) throw new Error(`Failed to fetch I-frame playlist: ${resp.status}`);
       const text = await resp.text();
       const parsed = parsePlaylistText(text, iframeVariant.url);
-      segments = parsed.segments;
-      isIframeMode = segments.length > 0;
+      // fMP4 I-frame playlists reference frames by byte-range into init+fragment,
+      // which convertTsToMp4 can't read — fall through to the regular fMP4 path.
+      if (!parsed.initSegmentUrl) {
+        segments = parsed.segments;
+        isIframeMode = segments.length > 0;
+      }
     }
 
     if (!isIframeMode) {
@@ -478,13 +486,27 @@ export async function thumbnails(input, options = {}) {
         const text = await resp.text();
         const parsed = parsePlaylistText(text, variant.url);
         segments = parsed.segments;
+        initSegmentUrl = parsed.initSegmentUrl;
       } else {
         segments = stream.segments;
+        initSegmentUrl = stream.initSegmentUrl ?? null;
       }
     }
 
     if (!segments || segments.length === 0) {
       throw new Error('No segments found in playlist');
+    }
+
+    // fMP4/CMAF path: fragments (moof/mdat) only decode when stitched onto the
+    // EXT-X-MAP init (ftyp/moov). Fetch that init once; the worker stitches it
+    // onto each fragment instead of running the (TS-only) parser, which is what
+    // produced black frames for CMAF archives.
+    const isFmp4Mode = !isIframeMode && !!initSegmentUrl;
+    let initBytes = null;
+    if (isFmp4Mode) {
+      const ir = await fetch(initSegmentUrl);
+      if (!ir.ok) throw new Error(`Failed to fetch fMP4 init segment: ${ir.status}`);
+      initBytes = new Uint8Array(await ir.arrayBuffer());
     }
 
     // Step 3: Group requested times by segment.
@@ -572,6 +594,11 @@ export async function thumbnails(input, options = {}) {
           let mp4Data;
           if (isIframeMode) {
             mp4Data = convertTsToMp4(new Uint8Array(buf));
+          } else if (isFmp4Mode) {
+            // CMAF/fMP4: stitch the EXT-X-MAP init onto this fragment to get a
+            // standalone, decodable MP4. No per-frame TS timeline here, so the
+            // capture loop plain-seeks to the in-segment offset.
+            mp4Data = stitchFmp4([new Uint8Array(buf)], { init: initBytes });
           } else {
             const parser = new TSParser();
             parser.parse(new Uint8Array(buf));
@@ -607,10 +634,13 @@ export async function thumbnails(input, options = {}) {
             }
 
             for (const t of groupTimes) {
-              // In I-frame mode, each segment is one frame — no seek needed.
-              // In regular mode, pick the exact frame ourselves and seek inside
-              // its display window so the browser snap is deterministic.
-              if (!isIframeMode) {
+              // I-frame mode: one keyframe per segment — no seek needed.
+              // fMP4 mode: no TS timeline, so plain-seek to the in-segment offset.
+              // Regular TS: pick the exact frame and seek inside its display
+              // window so the browser snap is deterministic.
+              if (isFmp4Mode) {
+                await seek(video, Math.max(0, t - segment.startTime));
+              } else if (!isIframeMode) {
                 await seekToFrame(video, timeline, t - segment.startTime);
               }
 
