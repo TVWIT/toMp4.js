@@ -1,5 +1,5 @@
 /**
- * toMp4.js v1.7.4
+ * toMp4.js v1.8.0
  * Convert MPEG-TS and fMP4 to standard MP4
  * https://github.com/TVWIT/toMp4.js
  * MIT License
@@ -143,8 +143,58 @@
   }
   
   /**
+   * Collapse discontinuity gaps in the video timeline.
+   *
+   * An edited HLS asset (e.g. inv-stream cuts) keeps absolute source PTS with an
+   * EXT-X-DISCONTINUITY at each removed span, so consecutive kept frames can jump
+   * by seconds. The MP4 video sample table derives each frame's duration from
+   * `dts[i+1]-dts[i]`, turning that jump into a multi-second frozen frame (and
+   * desyncing against audio, whose samples lay back-to-back at a fixed rate).
+   *
+   * This walks the video access units and, wherever the inter-frame gap far
+   * exceeds a normal frame, shifts that frame and everything after it back so the
+   * timeline is continuous — matching audio. A no-op on gapless streams.
+   *
+   * @param {TSParser} parser - finalized (normalized) parser
+   * @returns {number} number of discontinuities collapsed
+   */
+  function collapseVideoDiscontinuities(parser) {
+    const aus = parser.videoAccessUnits;
+    if (!aus || aus.length < 2) return 0;
+  
+    const origDts = parser.videoDts.slice();
+    const deltas = [];
+    for (let i = 1; i < origDts.length; i++) {
+      const d = origDts[i] - origDts[i - 1];
+      if (d > 0) deltas.push(d);
+    }
+    if (deltas.length === 0) return 0;
+    const sorted = deltas.sort((a, b) => a - b);
+    const frameDur = sorted[Math.floor(sorted.length / 2)] || 3000; // 90kHz ticks
+    // Only collapse gaps well beyond a normal frame AND at least ~0.5s, so real
+    // frame-rate jitter is never touched.
+    const GAP_THRESHOLD = Math.max(frameDur * 4, 45000);
+  
+    let shift = 0, collapsed = 0;
+    for (let i = 1; i < aus.length; i++) {
+      const delta = origDts[i] - origDts[i - 1];
+      if (delta > GAP_THRESHOLD) {
+        shift += delta - frameDur; // leave one nominal frame between the two sides
+        collapsed++;
+      }
+      if (shift > 0) {
+        aus[i].dts -= shift;
+        aus[i].pts -= shift;
+        parser.videoDts[i] -= shift;
+        parser.videoPts[i] -= shift;
+      }
+    }
+    return collapsed;
+  }
+  
+  /**
    * Convert MPEG-TS data to MP4
-   * 
+   *
    * @param {Uint8Array} tsData - MPEG-TS data
    * @param {object} options - Optional settings
    * @param {function} options.onProgress - Progress callback
@@ -206,6 +256,61 @@
     const parser = new TSParser();
     parser.parse(tsData);
     parser.finalize();
+  
+    return muxFromParser(parser, options);
+  }
+  
+  /**
+   * Convert MPEG-TS with a SEPARATE (demuxed) audio track to MP4.
+   *
+   * HLS commonly delivers audio as its own rendition (`#EXT-X-MEDIA:TYPE=AUDIO`),
+   * so the video variant's segments are video-only. This parses each stream, then
+   * merges the audio track into the video parser and normalizes BOTH against a
+   * shared base PTS — they share one 90kHz program clock, so relative A/V timing
+   * is preserved (verified: same domain). Without this, such HLS muxes silent.
+   *
+   * @param {Uint8Array} videoTs - Video-only MPEG-TS
+   * @param {Uint8Array} audioTs - Audio-only MPEG-TS (same source timeline)
+   * @param {object} options - Same options as convertTsToMp4
+   * @returns {Uint8Array} MP4 data
+   */
+  function convertTsToMp4WithSeparateAudio(videoTs, audioTs, options = {}) {
+    const log = options.onProgress || (() => { });
+  
+    log(`Parsing video...`, { phase: 'convert', percent: 52 });
+    const parser = new TSParser();
+    parser.parse(videoTs);
+    parser.finalize({ normalize: false });
+  
+    log(`Parsing audio...`, { phase: 'convert', percent: 54 });
+    const audioParser = new TSParser();
+    audioParser.parse(audioTs);
+    audioParser.finalize({ normalize: false });
+  
+    // Graft the audio track onto the video parser.
+    parser.audioAccessUnits = audioParser.audioAccessUnits;
+    parser.audioPts = audioParser.audioPts;
+    parser.audioStreamType = audioParser.audioStreamType;
+    parser.audioSampleRate = audioParser.audioSampleRate;
+    parser.audioChannels = audioParser.audioChannels;
+    parser.audioPid = audioParser.audioPid;
+    parser.debug.audioPesStarts = audioParser.debug.audioPesStarts;
+    parser.debug.audioPesCount = audioParser.debug.audioPesCount;
+    parser.debug.audioFramesInPes = audioParser.debug.audioFramesInPes;
+    parser.debug.audioSkipped = audioParser.debug.audioSkipped;
+  
+    // Now normalize video+audio together against one shared base PTS.
+    parser.normalizeTimestamps();
+  
+    return muxFromParser(parser, options);
+  }
+  
+  /**
+   * Build an MP4 from a finalized (parsed + normalized) TSParser.
+   * Shared by the muxed and separate-audio conversion paths.
+   */
+  function muxFromParser(parser, options = {}) {
+    const log = options.onProgress || (() => { });
   
     const debug = parser.debug;
     const videoInfo = getCodecInfo(parser.videoStreamType);
@@ -271,6 +376,13 @@
     }
   
     log(`Processing...`, { phase: 'convert', percent: 70 });
+  
+    // Collapse any discontinuity gaps (edited timelines) so video stays
+    // continuous and in sync with audio. No-op on gapless streams.
+    const collapsed = collapseVideoDiscontinuities(parser);
+    if (collapsed > 0) {
+      log(`Collapsed ${collapsed} discontinuity gap${collapsed > 1 ? 's' : ''} in video timeline`);
+    }
   
     // Track preroll for edit list (used for precise clipping)
     let clipPreroll = 0;
@@ -1027,6 +1139,175 @@
       return createBox('trak', ...newParts);
   }
   
+  // ── Demuxed HLS audio: merge a separate audio-only fMP4 track ────────────────
+  
+  /** Parse one fMP4 stream (init + fragments) into its ftyp/moov/tracks/mdat. */
+  function parseFmp4Source(fmp4Data) {
+      const boxes = parseBoxes(fmp4Data);
+      const ftyp = findBox(boxes, 'ftyp');
+      const moov = findBox(boxes, 'moov');
+      if (!ftyp || !moov) throw new Error('Invalid fMP4: missing ftyp or moov');
+      const movieTimescale = getMovieTimescale(moov);
+      const { trackMetadata, trackOrder } = extractTrackMetadata(moov);
+      const trexDefaults = extractTrexDefaults(moov);
+      const { tracks, combinedMdat } = collectTrackSamples(boxes, trackMetadata, trexDefaults);
+      return { ftyp, moov, movieTimescale, tracks, combinedMdat };
+  }
+  
+  function readTrakId(trakBox) {
+      for (const c of parseChildBoxes(trakBox)) {
+          if (c.type !== 'tkhd') continue;
+          const view = new DataView(c.data.buffer, c.data.byteOffset, c.data.byteLength);
+          return c.data[8] === 0 ? view.getUint32(20) : view.getUint32(28);
+      }
+      return null;
+  }
+  
+  /** Copy a trak box and overwrite its tkhd track_id (avoids id collisions when
+   *  merging two independently-authored init segments). */
+  function cloneTrakWithId(trakBox, newId) {
+      const data = new Uint8Array(trakBox.data);
+      for (const c of parseBoxes(data, 8, data.length)) {
+          if (c.type !== 'tkhd') continue;
+          const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+          const idOff = c.offset + (data[c.offset + 8] === 0 ? 20 : 28);
+          view.setUint32(idOff, newId);
+          break;
+      }
+      return { type: 'trak', data, size: data.length };
+  }
+  
+  /** Like rebuildMdatContent but each track reads from its own source mdat. */
+  function rebuildMdatMultiSource(tracks, trackOrder, trackToMdat) {
+      const ordered = trackOrder.filter((id) => tracks.has(id));
+      for (const id of tracks.keys()) if (!ordered.includes(id)) ordered.push(id);
+      let total = 0;
+      for (const id of ordered) for (const s of tracks.get(id).samples) total += s.size || 0;
+      const mdat = new Uint8Array(total);
+      let w = 0;
+      for (const id of ordered) {
+          const track = tracks.get(id);
+          const src = trackToMdat.get(id);
+          if (!track || !track.samples.length) { if (track) track.chunkOffsets = []; continue; }
+          track.chunkOffsets = [{ offset: w, sampleCount: track.samples.length }];
+          for (const s of track.samples) {
+              const start = s.byteOffset || 0, end = start + (s.size || 0);
+              if (start < 0 || end > src.byteLength) {
+                  throw new Error(`Invalid sample byte range for track ${id}: ${start}-${end}`);
+              }
+              mdat.set(src.subarray(start, end), w);
+              s.byteOffset = w; w += s.size || 0;
+          }
+      }
+      return mdat;
+  }
+  
+  /**
+   * Align separate video/audio tracks onto one timeline and trim audio to the
+   * video's extent. The two renditions share the source clock but have their own
+   * segment boundaries, so audio can lead the first video frame (measured ~0.94s).
+   * We shift everything so video starts at 0 and drop audio before/after video —
+   * the fMP4 stts is duration-based (starts each track at output-0), so a residual
+   * offset can't be carried in the sample table and must be removed here.
+   */
+  function alignSeparateTracks(tracks) {
+      let vTrack = null;
+      for (const [, t] of tracks) {
+          if (t.handlerType === 'vide' && t.samples.length) { vTrack = t; break; }
+      }
+      if (!vTrack) {
+          for (const [, t] of tracks) {
+              if (!t.samples.length) continue;
+              t.samples = normalizeSamples(t.samples, t.samples[0].dts || 0);
+              t.mediaTime = 0;
+              t.playbackDuration = sumSampleDurations(t.samples);
+          }
+          return;
+      }
+      const vStartSec = (vTrack.samples[0].dts || 0) / vTrack.timescale;
+      const vLast = vTrack.samples[vTrack.samples.length - 1];
+      const vEndSec = ((vLast.dts || 0) + (vLast.duration || 0)) / vTrack.timescale;
+  
+      for (const [, t] of tracks) {
+          if (!t.samples.length) continue;
+          const shift = Math.round(vStartSec * t.timescale);
+          let samples = t.samples.map((s) => ({ ...s, dts: (s.dts || 0) - shift, pts: (s.pts || 0) - shift }));
+          if (t !== vTrack) {
+              // keep one extra frame of pad on the tail so audio fully covers video
+              const endTick = Math.round((vEndSec - vStartSec) * t.timescale) + (samples[0]?.duration || 0);
+              samples = samples.filter((s) => (s.dts || 0) >= 0 && (s.dts || 0) < endTick);
+          }
+          t.samples = samples;
+          t.mediaTime = 0;
+          t.playbackDuration = sumSampleDurations(samples);
+      }
+  }
+  
+  /**
+   * Convert fMP4 video + a SEPARATE fMP4 audio rendition (demuxed HLS
+   * #EXT-X-MEDIA:TYPE=AUDIO) into one MP4 with both tracks. Without this, CMAF
+   * downloads (the production default) are silent. Discontinuities need no special
+   * handling here — the fMP4 sample table is duration-based, so edited timelines
+   * stay continuous by construction.
+   */
+  function convertFmp4WithSeparateAudio(videoFmp4, audioFmp4, options = {}) {
+      const vsrc = parseFmp4Source(videoFmp4);
+      const asrc = parseFmp4Source(audioFmp4);
+  
+      const combined = new Map();
+      const trackToMdat = new Map();
+      const trakBoxes = new Map();
+      const order = [];
+      let nextId = 1;
+  
+      for (const src of [vsrc, asrc]) {
+          const srcTraks = parseChildBoxes(src.moov).filter((c) => c.type === 'trak');
+          for (const [oldId, track] of src.tracks) {
+              if (!track.samples.length) continue;
+              const newId = nextId++;
+              track.trackId = newId;
+              combined.set(newId, track);
+              trackToMdat.set(newId, src.combinedMdat);
+              order.push(newId);
+              const orig = srcTraks.find((t) => readTrakId(t) === oldId) || srcTraks[0];
+              trakBoxes.set(newId, cloneTrakWithId(orig, newId));
+          }
+      }
+      if (combined.size === 0) throw new Error('Separate-audio fMP4: no tracks found');
+  
+      alignSeparateTracks(combined);
+  
+      const hasClip = Number.isFinite(options.startTime) || Number.isFinite(options.endTime);
+      const finalTracks = hasClip ? applyClipToTracks(combined, options) : combined;
+      if (finalTracks.size === 0) throw new Error('Clip range produced no samples');
+  
+      const rebuiltMdat = rebuildMdatMultiSource(finalTracks, order, trackToMdat);
+      const movieTimescale = vsrc.movieTimescale;
+      const maxMovieDuration = calculateMovieDuration(finalTracks, movieTimescale);
+  
+      const mvhdBox = findBox(parseChildBoxes(vsrc.moov), 'mvhd');
+      const parts = [];
+      if (mvhdBox) {
+          const mvhd = rebuildMvhd(mvhdBox, maxMovieDuration);
+          new DataView(mvhd.buffer, mvhd.byteOffset, mvhd.byteLength).setUint32(mvhd.length - 4, nextId);
+          parts.push(mvhd);
+      }
+      for (const newId of order) {
+          if (!finalTracks.has(newId)) continue;
+          const trak = rebuildTrak(trakBoxes.get(newId), finalTracks, maxMovieDuration);
+          if (trak) parts.push(trak);
+      }
+  
+      const newMoov = createBox('moov', ...parts);
+      const newMdat = createBox('mdat', rebuiltMdat);
+      const output = new Uint8Array(vsrc.ftyp.size + newMoov.byteLength + newMdat.byteLength);
+      output.set(vsrc.ftyp.data, 0);
+      output.set(newMoov, vsrc.ftyp.size);
+      output.set(newMdat, vsrc.ftyp.size + newMoov.byteLength);
+      updateStcoOffsets(output, vsrc.ftyp.size, newMoov.byteLength);
+      return output;
+  }
+  
   function updateStcoOffsets(output, ftypSize, moovSize) {
       const mdatContentOffset = ftypSize + moovSize + 8;
       const view = new DataView(output.buffer, output.byteOffset, output.byteLength);
@@ -1069,7 +1350,7 @@
    * @param {number} [options.endTime] - Clip end time (seconds)
    * @returns {Uint8Array} Standard MP4 data
    */
-  // Shared rebuild functions — also used by mp4-clip.js for standard MP4 clipping
+  // Shared rebuild functions — also used by mp4-clip.js and the streaming muxer
   {
       applyClipToTracks,
       rebuildMdatContent,
@@ -1077,6 +1358,12 @@
       rebuildTrak,
       rebuildMvhd,
       updateStcoOffsets,
+      extractTrackMetadata,
+      extractTrexDefaults,
+      collectTrackSamples,
+      alignSeparateTracks,
+      cloneTrakWithId,
+      readTrakId,
   };
   
   function convertFmp4ToMp4(fmp4Data, options = {}) {
@@ -1186,7 +1473,7 @@
   toMp4.isMpegTs = isMpegTs;
   toMp4.isFmp4 = isFmp4;
   toMp4.isStandardMp4 = isStandardMp4;
-  toMp4.version = '1.7.4';
+  toMp4.version = '1.8.0';
 
   return toMp4;
 });

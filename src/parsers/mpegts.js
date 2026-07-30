@@ -321,11 +321,13 @@ export class TSParser {
   /**
    * Finalize parsing - process remaining buffers and normalize timestamps
    */
-  finalize() {
+  finalize({ normalize = true } = {}) {
     if (this.videoPesBuffer.length > 0) this.processPES(this.concatenateBuffers(this.videoPesBuffer), 'video');
     if (this.audioPesBuffer.length > 0) this.processPES(this.concatenateBuffers(this.audioPesBuffer), 'audio');
 
-    this.normalizeTimestamps();
+    // Skip normalization when the caller will merge a separately-parsed audio
+    // track first and normalize both against a shared base PTS afterwards.
+    if (normalize) this.normalizeTimestamps();
   }
 
   normalizeTimestamps() {

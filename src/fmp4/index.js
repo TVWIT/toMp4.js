@@ -8,7 +8,7 @@
  * @module fmp4
  */
 
-export { convertFmp4ToMp4 } from './converter.js';
+export { convertFmp4ToMp4, convertFmp4WithSeparateAudio } from './converter.js';
 export { stitchFmp4 } from './stitcher.js';
 
 // Re-export utilities for advanced use cases

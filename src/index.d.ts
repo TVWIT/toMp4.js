@@ -27,11 +27,25 @@ declare module '@invintusmedia/tomp4' {
     width?: number;
     height?: number;
     codecs?: string;
+    /** GROUP-ID of the demuxed audio rendition this variant references, if any */
+    audioGroup?: string | null;
+  }
+
+  export interface HlsAudioRendition {
+    groupId: string | null;
+    name: string | null;
+    language: string | null;
+    isDefault: boolean;
+    autoselect: boolean;
+    /** Absolute URL of the audio media playlist */
+    url: string;
   }
 
   export interface HlsStream {
     masterUrl: string;
     variants: HlsVariant[];
+    /** Demuxed audio renditions (#EXT-X-MEDIA:TYPE=AUDIO with a URI) */
+    audioRenditions: HlsAudioRendition[];
     qualities: string[];
     select(quality: string | number): HlsStream;
     segments: string[];

@@ -30,8 +30,8 @@
  * NOT SUPPORTED: MPEG-1/2 Video, MP3, AC-3 (require transcoding)
  */
 
-import { convertTsToMp4, analyzeTsData } from './ts-to-mp4.js';
-import { convertFmp4ToMp4, stitchFmp4 } from './fmp4/index.js';
+import { convertTsToMp4, convertTsToMp4WithSeparateAudio, analyzeTsData } from './ts-to-mp4.js';
+import { convertFmp4ToMp4, convertFmp4WithSeparateAudio, stitchFmp4 } from './fmp4/index.js';
 import { clipMp4 } from './mp4-clip.js';
 import { clipHls, HlsClipResult } from './hls-clip.js';
 import { stitchTs, concatTs } from './mpegts/index.js';
@@ -43,6 +43,9 @@ import { TSParser } from './parsers/mpegts.js';
 import { MP4Parser } from './parsers/mp4.js';
 import { RemoteMp4 } from './remote/index.js';
 import { thumbnail, thumbnails, ImageResult } from './thumbnail.js';
+import { Mp3Encoder, encodeMp3, audioToMp3, streamMp3, hlsAudioToMp3, Mp3Result } from './mp3/index.js';
+import { streamFmp4SeparateAudio, streamHlsToMp4 } from './stream/mp4.js';
+import { ArrayBufferTarget, FileSystemWritableTarget, canStreamToDisk, pickDownloadTarget } from './stream/target.js';
 
 /**
  * Result object returned by toMp4()
@@ -174,6 +177,20 @@ function detectFormat(data) {
 function convertData(data, options = {}) {
   const uint8 = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
   const format = detectFormat(uint8);
+
+  // Demuxed HLS audio: downloadHls attaches a separate audio-only buffer when
+  // the variant references an #EXT-X-MEDIA:TYPE=AUDIO group. Mux it as a second
+  // track (otherwise the output is silent). MPEG-TS video + MPEG-TS audio today.
+  const audioData = data._hlsAudioData;
+  if (audioData) {
+    const audio = audioData instanceof ArrayBuffer ? new Uint8Array(audioData) : audioData;
+    if (format === 'mpegts' && isMpegTs(audio)) {
+      return convertTsToMp4WithSeparateAudio(uint8, audio, options);
+    }
+    if (format === 'fmp4' && isFmp4(audio)) {
+      return convertFmp4WithSeparateAudio(uint8, audio, options);
+    }
+  }
 
   switch (format) {
     case 'mpegts':
@@ -332,6 +349,21 @@ toMp4.isWebCodecsSupported = isWebCodecsSupported;
 toMp4.thumbnail = thumbnail;
 toMp4.thumbnails = thumbnails;
 
+// MP3 encoding (from-scratch MPEG-1/2 Layer III)
+toMp4.Mp3Encoder = Mp3Encoder;
+toMp4.encodeMp3 = encodeMp3;      // raw PCM -> MP3 (works everywhere)
+toMp4.audioToMp3 = audioToMp3;    // M4A/AAC bytes -> MP3 (browser: Web Audio decode)
+toMp4.hlsAudioToMp3 = hlsAudioToMp3; // HLS master -> audio-only MP3 (browser)
+toMp4.streamMp3 = streamMp3;      // PCM -> MP3, written to a StreamTarget
+
+// Streaming to disk (large downloads without buffering the whole file)
+toMp4.streamFmp4SeparateAudio = streamFmp4SeparateAudio;
+toMp4.streamHlsToMp4 = streamHlsToMp4;  // HLS master -> MP4 on disk (lazy fetch)
+toMp4.ArrayBufferTarget = ArrayBufferTarget;
+toMp4.FileSystemWritableTarget = FileSystemWritableTarget;
+toMp4.canStreamToDisk = canStreamToDisk;
+toMp4.pickDownloadTarget = pickDownloadTarget;
+
 // Parsers
 toMp4.MP4Parser = MP4Parser;
 toMp4.TSParser = TSParser;
@@ -340,14 +372,16 @@ toMp4.TSParser = TSParser;
 toMp4.RemoteMp4 = RemoteMp4;
 
 // Version (injected at build time for dist, read from package.json for ESM)
-toMp4.version = '1.7.4';
+toMp4.version = '1.8.0';
 
 // Export
 export {
   toMp4,
   Mp4Result,
   convertTsToMp4,
+  convertTsToMp4WithSeparateAudio,
   convertFmp4ToMp4,
+  convertFmp4WithSeparateAudio,
   clipMp4,
   clipHls,
   HlsClipResult,
@@ -378,6 +412,20 @@ export {
   TSParser,
   MP4Parser,
   // Remote MP4 (on-demand HLS)
-  RemoteMp4
+  RemoteMp4,
+  // MP3 encoding
+  Mp3Encoder,
+  encodeMp3,
+  audioToMp3,
+  streamMp3,
+  hlsAudioToMp3,
+  Mp3Result,
+  // Streaming to disk
+  streamFmp4SeparateAudio,
+  streamHlsToMp4,
+  ArrayBufferTarget,
+  FileSystemWritableTarget,
+  canStreamToDisk,
+  pickDownloadTarget
 };
 export default toMp4;
