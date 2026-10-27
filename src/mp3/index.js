@@ -3,6 +3,8 @@
  * @module mp3
  */
 import { Mp3Encoder } from './encoder.js';
+import { parseHls, parsePlaylistText, resolveAudioRendition } from '../hls.js';
+import { convertFmp4ToMp4 } from '../fmp4/index.js';
 
 /** Result of an MP3 encode — mirrors Mp4Result (download/toURL/toBlob/data). */
 export class Mp3Result {
@@ -133,8 +135,6 @@ export async function audioToMp3(audioData, opts = {}) {
  * @returns {Promise<Mp3Result>}
  */
 export async function hlsAudioToMp3(masterUrl, opts = {}) {
-  const { parseHls, parsePlaylistText, resolveAudioRendition } = await import('../hls.js');
-  const { convertFmp4ToMp4 } = await import('../fmp4/index.js');
   const stream = await parseHls(masterUrl, opts);
   if (opts.quality) stream.select(opts.quality);
   const audio = resolveAudioRendition(stream, stream.selected);
