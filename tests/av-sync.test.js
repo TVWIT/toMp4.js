@@ -88,7 +88,23 @@ function getTrackInfo(trak) {
     }
   }
 
-  return { handler, timescale, mediaDuration, elst };
+  // Composition offset of the first sample (the keyframe): the video media
+  // timeline starts at its decode time, so its edit list skips this too
+  let firstCompositionOffset = 0;
+  const minf = findBox(mdiaChildren, 'minf');
+  const stbl = minf && findBox(children(minf), 'stbl');
+  const ctts = stbl && findBox(children(stbl), 'ctts');
+  if (ctts && ctts.data.byteLength >= 24) {
+    const v = new DataView(ctts.data.buffer, ctts.data.byteOffset, ctts.data.byteLength);
+    if (v.getUint32(12) > 0) firstCompositionOffset = v.getInt32(20);
+  }
+
+  return { handler, timescale, mediaDuration, elst, firstCompositionOffset };
+}
+
+/** Seconds of the track's own media skipped before its first shown sample. */
+function presentedPreroll(track) {
+  return (track.elst.mediaTime - track.firstCompositionOffset) / track.timescale;
 }
 
 function inspectTracks(mp4Data) {
@@ -156,8 +172,8 @@ const tests = [
     assert(video.elst, 'Video must have edit list');
     assert(audio.elst, 'Audio must have edit list when video has preroll');
 
-    const videoPreroll = video.elst.mediaTime / video.timescale;
-    const audioPreroll = audio.elst.mediaTime / audio.timescale;
+    const videoPreroll = presentedPreroll(video);
+    const audioPreroll = presentedPreroll(audio);
 
     console.log(`   Video preroll: ${videoPreroll.toFixed(3)}s, Audio preroll: ${audioPreroll.toFixed(3)}s`);
     assertApprox(videoPreroll, audioPreroll, AAC_FRAME_TOLERANCE_SEC,
@@ -247,8 +263,8 @@ const tests = [
     assert(video.elst, 'Video must have edit list');
     assert(audio.elst, 'Audio must have edit list when video has preroll');
 
-    const videoPreroll = video.elst.mediaTime / video.timescale;
-    const audioPreroll = audio.elst.mediaTime / audio.timescale;
+    const videoPreroll = presentedPreroll(video);
+    const audioPreroll = presentedPreroll(audio);
 
     console.log(`   Video preroll: ${videoPreroll.toFixed(3)}s, Audio preroll: ${audioPreroll.toFixed(3)}s`);
     assertApprox(videoPreroll, audioPreroll, AAC_FRAME_TOLERANCE_SEC,

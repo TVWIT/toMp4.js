@@ -107,16 +107,29 @@
     const keyframePts = clippedVideo[0].pts;
     const lastFramePts = clippedVideo[clippedVideo.length - 1].pts;
   
-    // Pre-roll: time between keyframe and requested start
+    // Snap the start to the frame that contains it (the frame shown first).
+    // A start inside a frame is ambiguous — players round it differently —
+    // and audio must be cut at the same instant.
+    let startFramePts = keyframePts;
+    for (const au of clippedVideo) {
+      if (au.pts <= startPts && au.pts > startFramePts) startFramePts = au.pts;
+    }
+  
+    // Pre-roll: time between keyframe and the first shown frame
     // This is the time the decoder needs to process but player shouldn't display
-    const prerollPts = Math.max(0, startPts - keyframePts);
+    const prerollPts = startFramePts - keyframePts;
   
     // Clip audio from KEYFRAME time (same as video) so A/V stays in sync
     // even on players that ignore edit lists. The edit list will skip the
     // audio preroll on compliant players, just like it does for video.
+    // If that would start audio after the first shown frame (a start right at
+    // the keyframe), keep the frame before, which straddles it.
     const audioStartPts = keyframePts;
     const audioEndPts = Math.min(endPts, lastFramePts + 90000);
-    const clippedAudio = audioAUs.filter(au => au.pts >= audioStartPts && au.pts < audioEndPts);
+    let firstAudio = audioAUs.findIndex(au => au.pts >= audioStartPts);
+    if (firstAudio === -1) firstAudio = audioAUs.length;
+    if (firstAudio > 0 && (firstAudio === audioAUs.length || audioAUs[firstAudio].pts > startFramePts)) firstAudio--;
+    const clippedAudio = audioAUs.slice(firstAudio).filter(au => au.pts < audioEndPts);
   
     // Normalize both video and audio to the same base (keyframe PTS)
     // so they share a common timeline regardless of edit list support
@@ -389,15 +402,26 @@
   
     // Apply time range clipping if specified
     if (options.startTime !== undefined || options.endTime !== undefined) {
+      // HLS downloads clip relative to the first downloaded video frame; the
+      // timeline is normalized to the earliest sample, which may be audio
+      let base = 0;
+      if (options._clipFromFirstFrame && parser.videoAccessUnits.length) {
+        let firstPts = Infinity;
+        for (const au of parser.videoAccessUnits) if (au.pts < firstPts) firstPts = au.pts;
+        base = firstPts / 90000;
+      }
       const startTime = options.startTime || 0;
       const endTime = options.endTime !== undefined ? options.endTime : Infinity;
   
       const clipResult = clipAccessUnits(
         parser.videoAccessUnits,
         parser.audioAccessUnits,
-        startTime,
-        endTime
+        startTime + base,
+        endTime + base
       );
+      clipResult.requestedStartTime = startTime;
+      clipResult.requestedEndTime = endTime;
+      clipResult.actualEndTime -= base;
   
       parser.videoAccessUnits = clipResult.video;
       parser.audioAccessUnits = clipResult.audio;
@@ -417,7 +441,7 @@
     }
   
     log(`Building MP4...`, { phase: 'convert', percent: 85 });
-    const muxer = new MP4Muxer(parser, { preroll: clipPreroll });
+    const muxer = new MP4Muxer(parser, { preroll: clipPreroll, clipped: options.startTime !== undefined || options.endTime !== undefined });
     const { width, height } = muxer.getVideoDimensions();
     log(`Dimensions: ${width}x${height}`);
   
@@ -507,6 +531,7 @@
       const trackMetadata = new Map();
       const trackOrder = [];
       const moovChildren = parseChildBoxes(moovBox);
+      const movieTimescale = getMovieTimescale(moovBox);
   
       for (const child of moovChildren) {
           if (child.type !== 'trak') continue;
@@ -515,9 +540,13 @@
           let trackId = null;
           let timescale = 0;
           let handlerType = 'unknown';
+          let elstEntries = null;
   
           for (const trakChild of trakChildren) {
-              if (trakChild.type === 'tkhd') {
+              if (trakChild.type === 'edts') {
+                  const elst = findBox(parseChildBoxes(trakChild), 'elst');
+                  if (elst) elstEntries = parseElst(elst.data, 0);
+              } else if (trakChild.type === 'tkhd') {
                   const view = new DataView(trakChild.data.buffer, trakChild.data.byteOffset, trakChild.data.byteLength);
                   trackId = trakChild.data[8] === 0 ? view.getUint32(20) : view.getUint32(28);
               } else if (trakChild.type === 'mdia') {
@@ -539,10 +568,18 @@
           }
   
           if (trackId !== null) {
+              // Media time presented at 0 (B-frame delay, AAC priming), in ticks.
+              // Clipping applies it so clip times are presentation times.
+              let editShift = 0;
+              if (elstEntries && timescale) {
+                  const edit = summarizeEdits(elstEntries, timescale, movieTimescale);
+                  editShift = Math.round((edit.mediaTime - edit.emptyDuration) * timescale);
+              }
               trackMetadata.set(trackId, {
                   trackId,
                   timescale: timescale || 90000,
                   handlerType,
+                  editShift,
               });
               trackOrder.push(trackId);
           }
@@ -610,12 +647,28 @@
           return { samples: [], mediaTime: 0, playbackDuration: 0 };
       }
   
+      // Snap the start to the beginning of the frame that contains it (the
+      // frame shown first). A start inside a frame is ambiguous — players
+      // round it differently — and audio must be cut at the same instant.
+      let snappedStart = -Infinity;
+      for (let i = decodeStartIndex; i < endIndex; i++) {
+          const pts = samples[i].pts || 0;
+          if (pts <= startTick && pts > snappedStart) snappedStart = pts;
+      }
+      if (!Number.isFinite(snappedStart)) snappedStart = startTick;
+      startTick = snappedStart;
+  
       const selected = samples.slice(decodeStartIndex, endIndex);
       const decodeStartDts = selected[0].dts || 0;
       const mediaTime = Math.max(0, startTick - decodeStartDts);
       const normalized = normalizeSamples(selected, decodeStartDts);
-      const decodeDuration = sumSampleDurations(normalized);
-      const maxPlayable = Math.max(0, decodeDuration - mediaTime);
+      // Presentation ends after the last frame shown, which with B-frames is
+      // later than the last decode time
+      let presentationEnd = 0;
+      for (const sample of normalized) {
+          presentationEnd = Math.max(presentationEnd, (sample.pts || 0) + (sample.duration || 0));
+      }
+      const maxPlayable = Math.max(0, presentationEnd - mediaTime);
       const requested = Number.isFinite(endTick) ? Math.max(0, endTick - startTick) : maxPlayable;
       const playbackDuration = Math.min(requested, maxPlayable);
   
@@ -623,6 +676,7 @@
           samples: normalized,
           mediaTime,
           playbackDuration,
+          startTick,
       };
   }
   
@@ -631,8 +685,10 @@
           return { samples: [], mediaTime: 0, playbackDuration: 0 };
       }
   
+      // Start with the sample that contains startTick, so the track never
+      // starts after the requested instant (the edit list trims the rest).
       let startIndex = 0;
-      while (startIndex < samples.length && (samples[startIndex].pts || 0) < startTick) {
+      while (startIndex < samples.length && (samples[startIndex].pts || 0) + (samples[startIndex].duration || 0) <= startTick) {
           startIndex++;
       }
       if (startIndex >= samples.length) {
@@ -663,7 +719,42 @@
           samples: normalized,
           mediaTime: 0,
           playbackDuration,
+          startPts: selected[0].pts || 0,
       };
+  }
+  
+  /**
+   * Shift samples onto the timeline the clip times refer to. Applies each
+   * track's source edit list (`editShift`) so both tracks are cut at the same
+   * presented instant, and with `_clipFromFirstFrame` (HLS downloads, which
+   * clip relative to the first downloaded segment) rebases so the first video
+   * frame is presented at 0 — fMP4 keeps absolute decode times.
+   */
+  function toPresentationTimeline(tracks, options) {
+      const anyShift = [...tracks.values()].some((t) => t.editShift);
+      if (!anyShift && !options._clipFromFirstFrame) return tracks;
+  
+      let baseSec = 0;
+      if (options._clipFromFirstFrame) {
+          let first = Infinity;
+          for (const [, t] of tracks) {
+              if (t.handlerType !== 'vide' || !t.samples.length) continue;
+              for (const s of t.samples) first = Math.min(first, ((s.pts || 0) - (t.editShift || 0)) / t.timescale);
+              break;
+          }
+          if (Number.isFinite(first)) baseSec = first;
+      }
+  
+      const shifted = new Map();
+      for (const [id, t] of tracks) {
+          const shift = (t.editShift || 0) + Math.round(baseSec * t.timescale);
+          if (!shift) { shifted.set(id, t); continue; }
+          shifted.set(id, {
+              ...t,
+              samples: t.samples.map((s) => ({ ...s, dts: (s.dts || 0) - shift, pts: (s.pts || 0) - shift })),
+          });
+      }
+      return shifted;
   }
   
   function applyClipToTracks(tracks, options = {}) {
@@ -680,7 +771,9 @@
           return tracks;
       }
   
-      const startSec = hasStart ? Math.max(0, options.startTime) : 0;
+      tracks = toPresentationTimeline(tracks, options);
+  
+      let startSec = hasStart ? Math.max(0, options.startTime) : 0;
       const endSec = hasEnd ? Math.max(startSec, options.endTime) : Infinity;
   
       let videoTrackId = null;
@@ -704,6 +797,7 @@
   
               if (clip.samples.length) {
                   videoPrerollSec = clip.mediaTime / vTrack.timescale;
+                  startSec = clip.startTick / vTrack.timescale; // frame-snapped; audio follows
                   clipped.set(videoTrackId, {
                       ...vTrack,
                       samples: clip.samples,
@@ -720,22 +814,35 @@
       for (const [trackId, track] of tracks) {
           if (!track.samples.length || trackId === videoTrackId) continue;
   
-          const adjustedStartSec = Math.max(0, startSec - videoPrerollSec);
+          // Not clamped at 0: on a presentation timeline (source edit lists
+          // applied) audio priming sits before 0, and the clamp cut audio
+          // ~one preroll later than video for clips near the start.
+          const adjustedStartSec = startSec - videoPrerollSec;
           const startTick = Math.round(adjustedStartSec * track.timescale);
           const endTick = Number.isFinite(endSec) ? Math.round(endSec * track.timescale) : Infinity;
           const clip = clipNonVideoSamples(track.samples, startTick, endTick);
   
           if (!clip.samples.length) continue;
   
-          // Audio preroll matches video preroll so both tracks share the same timeline
-          const audioPreroll = Math.round(videoPrerollSec * track.timescale);
+          // Preroll from the audio's own first sample to the requested start.
+          // Audio is cut on frame boundaries (e.g. 21 ms for AAC at 48 kHz), so
+          // reusing the video's preroll left up to one frame of A/V error. It
+          // stays within a frame of the video's preroll, so players that ignore
+          // edit lists keep the tracks together too.
+          // A track that starts after the requested start (delayed in the
+          // source) gets an empty edit for the gap.
+          const audioPreroll = Math.round(startSec * track.timescale) - clip.startPts;
           const totalDur = sumSampleDurations(clip.samples);
-          const playbackDuration = Math.max(0, totalDur - audioPreroll);
+          const playbackDuration = Math.max(0, totalDur - Math.max(0, audioPreroll));
+          const emptyDuration = Number.isFinite(endSec)
+              ? Math.min(Math.max(0, -audioPreroll), Math.round((endSec - startSec) * track.timescale))
+              : Math.max(0, -audioPreroll);
   
           clipped.set(trackId, {
               ...track,
               samples: clip.samples,
-              mediaTime: audioPreroll,
+              mediaTime: Math.max(0, audioPreroll),
+              emptyDuration,
               playbackDuration,
               chunkOffsets: [],
           });
@@ -791,6 +898,7 @@
                           chunkOffsets: [],
                           mediaTime: 0,
                           playbackDuration: 0,
+                          editShift: meta.editShift || 0,
                       });
                   }
                   const track = tracks.get(trackId);
@@ -887,7 +995,10 @@
           const playbackDuration = track.playbackDuration > 0 ? track.playbackDuration : fallback;
           track.playbackDuration = playbackDuration;
           track.movieDuration = toMovieTimescale(playbackDuration, track.timescale, movieTimescale);
-          maxDuration = Math.max(maxDuration, track.movieDuration);
+          track.emptyMovieDuration = track.emptyDuration
+              ? toMovieTimescale(track.emptyDuration, track.timescale, movieTimescale)
+              : 0;
+          maxDuration = Math.max(maxDuration, track.emptyMovieDuration + track.movieDuration);
       }
       return maxDuration;
   }
@@ -910,7 +1021,9 @@
       const data = new Uint8Array(tkhdBox.data);
       const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
       const version = data[8];
-      const duration = trackInfo?.movieDuration ?? maxMovieDuration;
+      const duration = trackInfo?.movieDuration != null
+          ? trackInfo.movieDuration + (trackInfo.emptyMovieDuration || 0)
+          : maxMovieDuration;
       if (version === 0) view.setUint32(28, duration);
       else {
           view.setUint32(36, 0);
@@ -1048,6 +1161,8 @@
           }
           const cttsData = new Uint8Array(8 + cttsEntries.length * 8);
           const cttsView = new DataView(cttsData.buffer);
+          // Negative offsets need version 1 (signed)
+          if (cttsEntries.some((entry) => entry.offset < 0)) cttsData[0] = 1;
           cttsView.setUint32(4, cttsEntries.length);
           offset = 8;
           for (const entry of cttsEntries) {
@@ -1120,13 +1235,22 @@
           else newParts.push(child.data);
       }
   
-      const elstPayload = new Uint8Array(16);
+      // An empty edit first when the track starts after the clip does
+      const empty = trackInfo.emptyMovieDuration > 0 ? trackInfo.emptyMovieDuration : 0;
+      const elstPayload = new Uint8Array(4 + (empty ? 24 : 12));
       const elstView = new DataView(elstPayload.buffer);
-      elstView.setUint32(0, 1);
-      elstView.setUint32(4, trackInfo.movieDuration ?? maxMovieDuration);
-      elstView.setInt32(8, Math.max(0, Math.round(trackInfo.mediaTime || 0)));
-      elstView.setUint16(12, 1);
-      elstView.setUint16(14, 0);
+      elstView.setUint32(0, empty ? 2 : 1);
+      let entry = 4;
+      if (empty) {
+          elstView.setUint32(entry, empty);
+          elstView.setInt32(entry + 4, -1);
+          elstView.setUint16(entry + 8, 1);
+          entry += 12;
+      }
+      elstView.setUint32(entry, trackInfo.movieDuration ?? maxMovieDuration);
+      elstView.setInt32(entry + 4, Math.max(0, Math.round(trackInfo.mediaTime || 0)));
+      elstView.setUint16(entry + 8, 1);
+      elstView.setUint16(entry + 10, 0);
       const elst = createFullBox('elst', 0, 0, elstPayload);
       const edts = createBox('edts', elst);
   

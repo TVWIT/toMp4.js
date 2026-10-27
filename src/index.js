@@ -41,7 +41,7 @@ import { TSMuxer } from './muxers/mpegts.js';
 import { MP4Muxer } from './muxers/mp4.js';
 import { TSParser } from './parsers/mpegts.js';
 import { MP4Parser } from './parsers/mp4.js';
-import { RemoteMp4 } from './remote/index.js';
+import { RemoteMp4, RemoteMp4Error } from './remote/index.js';
 import { thumbnail, thumbnails, ImageResult } from './thumbnail.js';
 import { Mp3Encoder, encodeMp3, audioToMp3, streamMp3, hlsAudioToMp3, Mp3Result } from './mp3/index.js';
 import { streamFmp4SeparateAudio, streamHlsToMp4 } from './stream/mp4.js';
@@ -301,11 +301,13 @@ async function toMp4(input, options = {}) {
   }
 
   // Adjust clip times if we downloaded HLS with a time range
-  // The downloaded segments have been normalized to start at 0,
-  // so we need to adjust the requested clip times accordingly
+  // The downloaded segments start at the first segment's playlist time, so
+  // the requested times are made relative to it, and the converters clip
+  // relative to the first downloaded video frame (_clipFromFirstFrame)
   let convertOptions = { ...options };
   if (data._hlsTimeRange && (options.startTime !== undefined || options.endTime !== undefined)) {
     const segmentStart = data._hlsTimeRange.actualStart;
+    convertOptions._clipFromFirstFrame = true;
     if (options.startTime !== undefined) {
       convertOptions.startTime = Math.max(0, options.startTime - segmentStart);
     }
@@ -370,6 +372,7 @@ toMp4.TSParser = TSParser;
 
 // Remote MP4 (on-demand HLS from remote MP4)
 toMp4.RemoteMp4 = RemoteMp4;
+toMp4.RemoteMp4Error = RemoteMp4Error;
 
 // Version (injected at build time for dist, read from package.json for ESM)
 toMp4.version = '1.8.0';
@@ -413,6 +416,7 @@ export {
   MP4Parser,
   // Remote MP4 (on-demand HLS)
   RemoteMp4,
+  RemoteMp4Error,
   // MP3 encoding
   Mp3Encoder,
   encodeMp3,

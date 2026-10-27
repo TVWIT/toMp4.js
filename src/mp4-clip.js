@@ -28,14 +28,19 @@ import {
  * Convert MP4Parser samples to the format expected by the clipping pipeline.
  * MP4Parser returns times in seconds; the clipper needs ticks.
  */
-function convertSamples(parserSamples, timescale) {
+function convertSamples(parserSamples, timescale, edit) {
+    // Clip times are presentation times. Apply the source's edit list so both
+    // tracks are cut on the timeline the file is played on (B-frame delay and
+    // AAC priming are usually edits; ignoring them cut video and audio at
+    // different instants — up to ~50 ms of A/V error).
+    const shift = edit ? Math.round((edit.mediaTime - edit.emptyDuration) * timescale) : 0;
     return parserSamples.map(s => ({
         duration: Math.round(s.duration * timescale),
         size: s.size,
         flags: s.isKeyframe ? 0 : 0x10000,
         compositionTimeOffset: Math.round((s.pts - s.dts) * timescale),
-        dts: Math.round(s.dts * timescale),
-        pts: Math.round(s.pts * timescale),
+        dts: Math.round(s.dts * timescale) - shift,
+        pts: Math.round(s.pts * timescale) - shift,
         byteOffset: s.offset,
     }));
 }
@@ -60,7 +65,7 @@ export function clipMp4(mp4Data, options = {}) {
     const tracks = new Map();
     const trackOrder = [];
 
-    const vSamples = convertSamples(parser.getVideoSamples(), videoTrack.timescale);
+    const vSamples = convertSamples(parser.getVideoSamples(), videoTrack.timescale, videoTrack.edit);
     tracks.set(videoTrack.trackId, {
         trackId: videoTrack.trackId,
         timescale: videoTrack.timescale,
@@ -73,7 +78,7 @@ export function clipMp4(mp4Data, options = {}) {
     trackOrder.push(videoTrack.trackId);
 
     if (audioTrack) {
-        const aSamples = convertSamples(parser.getAudioSamples(), audioTrack.timescale);
+        const aSamples = convertSamples(parser.getAudioSamples(), audioTrack.timescale, audioTrack.edit);
         tracks.set(audioTrack.trackId, {
             trackId: audioTrack.trackId,
             timescale: audioTrack.timescale,

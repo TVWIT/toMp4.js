@@ -86,16 +86,29 @@ function clipAccessUnits(videoAUs, audioAUs, startTime, endTime) {
   const keyframePts = clippedVideo[0].pts;
   const lastFramePts = clippedVideo[clippedVideo.length - 1].pts;
 
-  // Pre-roll: time between keyframe and requested start
+  // Snap the start to the frame that contains it (the frame shown first).
+  // A start inside a frame is ambiguous — players round it differently —
+  // and audio must be cut at the same instant.
+  let startFramePts = keyframePts;
+  for (const au of clippedVideo) {
+    if (au.pts <= startPts && au.pts > startFramePts) startFramePts = au.pts;
+  }
+
+  // Pre-roll: time between keyframe and the first shown frame
   // This is the time the decoder needs to process but player shouldn't display
-  const prerollPts = Math.max(0, startPts - keyframePts);
+  const prerollPts = startFramePts - keyframePts;
 
   // Clip audio from KEYFRAME time (same as video) so A/V stays in sync
   // even on players that ignore edit lists. The edit list will skip the
   // audio preroll on compliant players, just like it does for video.
+  // If that would start audio after the first shown frame (a start right at
+  // the keyframe), keep the frame before, which straddles it.
   const audioStartPts = keyframePts;
   const audioEndPts = Math.min(endPts, lastFramePts + 90000);
-  const clippedAudio = audioAUs.filter(au => au.pts >= audioStartPts && au.pts < audioEndPts);
+  let firstAudio = audioAUs.findIndex(au => au.pts >= audioStartPts);
+  if (firstAudio === -1) firstAudio = audioAUs.length;
+  if (firstAudio > 0 && (firstAudio === audioAUs.length || audioAUs[firstAudio].pts > startFramePts)) firstAudio--;
+  const clippedAudio = audioAUs.slice(firstAudio).filter(au => au.pts < audioEndPts);
 
   // Normalize both video and audio to the same base (keyframe PTS)
   // so they share a common timeline regardless of edit list support
@@ -368,15 +381,26 @@ function muxFromParser(parser, options = {}) {
 
   // Apply time range clipping if specified
   if (options.startTime !== undefined || options.endTime !== undefined) {
+    // HLS downloads clip relative to the first downloaded video frame; the
+    // timeline is normalized to the earliest sample, which may be audio
+    let base = 0;
+    if (options._clipFromFirstFrame && parser.videoAccessUnits.length) {
+      let firstPts = Infinity;
+      for (const au of parser.videoAccessUnits) if (au.pts < firstPts) firstPts = au.pts;
+      base = firstPts / 90000;
+    }
     const startTime = options.startTime || 0;
     const endTime = options.endTime !== undefined ? options.endTime : Infinity;
 
     const clipResult = clipAccessUnits(
       parser.videoAccessUnits,
       parser.audioAccessUnits,
-      startTime,
-      endTime
+      startTime + base,
+      endTime + base
     );
+    clipResult.requestedStartTime = startTime;
+    clipResult.requestedEndTime = endTime;
+    clipResult.actualEndTime -= base;
 
     parser.videoAccessUnits = clipResult.video;
     parser.audioAccessUnits = clipResult.audio;
@@ -396,7 +420,7 @@ function muxFromParser(parser, options = {}) {
   }
 
   log(`Building MP4...`, { phase: 'convert', percent: 85 });
-  const muxer = new MP4Muxer(parser, { preroll: clipPreroll });
+  const muxer = new MP4Muxer(parser, { preroll: clipPreroll, clipped: options.startTime !== undefined || options.endTime !== undefined });
   const { width, height } = muxer.getVideoDimensions();
   log(`Dimensions: ${width}x${height}`);
 
