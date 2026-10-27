@@ -4,3 +4,4 @@ node_modules/
 *.mp4
 *.ts
 .env
+!tests/fixtures/**/*.ts
