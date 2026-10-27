@@ -1,6 +1,6 @@
 {
   "name": "@invintusmedia/tomp4",
-  "version": "1.8.0",
+  "version": "1.8.1",
   "description": "Convert MPEG-TS, fMP4, and HLS streams to MP4 with clipping support - pure JavaScript, zero dependencies",
   "main": "src/index.js",
   "module": "src/index.js",
@@ -20,7 +20,7 @@
   "scripts": {
     "build": "node build.js",
     "dev": "npx serve . -p 3000",
-    "test": "npm run test:hls-map && npm run test:remote-hls && npm run test:clip-sync && npm run test:hls-audio-group && npm run test:cmaf-audio-group && npm run test:discontinuity && npm run test:mp3 && npm run test:stream && npm run test:thumbnail && npm run test:thumbnail-pick && npm run test:clip && npm run test:mp4 && npm run test:av-sync && npm run test:mp4-clip",
+    "test": "npm run test:no-dynamic-import && npm run test:hls-map && npm run test:remote-hls && npm run test:clip-sync && npm run test:hls-audio-group && npm run test:cmaf-audio-group && npm run test:discontinuity && npm run test:mp3 && npm run test:stream && npm run test:thumbnail && npm run test:thumbnail-pick && npm run test:clip && npm run test:mp4 && npm run test:av-sync && npm run test:mp4-clip",
     "test:hls-map": "node tests/hls-map.test.js",
     "test:hls-audio-group": "node tests/hls-audio-group.test.js",
     "test:cmaf-audio-group": "node tests/cmaf-audio-group.test.js",
@@ -33,6 +33,7 @@
     "test:fmp4-clip": "node tests/fmp4-clip.test.js",
     "test:av-sync": "node tests/av-sync.test.js",
     "test:mp4-clip": "node tests/mp4-clip.test.js",
+    "test:no-dynamic-import": "node tests/no-dynamic-import.test.js",
     "test:mp4": "node tests/mp4-parser.test.js",
     "test:all": "npm run test",
     "release": "npm test && npm run build && git add -A && git commit -m \"v$(node -p \"require('./package.json').version\")\" && git tag v$(node -p \"require('./package.json').version\") && git push && git push --tags",

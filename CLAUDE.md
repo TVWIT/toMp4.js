@@ -6,7 +6,7 @@
 
 ## Quick Reference
 
-- **Package**: `@invintusmedia/tomp4` (v1.8.0)
+- **Package**: `@invintusmedia/tomp4` (v1.8.1)
 - **Repo**: TVWIT/toMp4.js
 - **License**: MIT
 - **Entry**: `src/index.js`
@@ -24,6 +24,7 @@ npm run test:fmp4-clip # fMP4 clipping tests
 npm run test:mp4      # MP4 parser tests
 npm run test:av-sync  # A/V sync regression tests
 npm run test:mp4-clip # MP4-to-MP4 clipping tests
+npm run test:no-dynamic-import # src uses static imports only (dynamic import() breaks hosts that wrap their entry)
 npm run build         # Bundle for distribution
 npm run dev           # Local dev server on port 3000
 ```
