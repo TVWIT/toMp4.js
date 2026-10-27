@@ -1,0 +1,12 @@
+node_modules
+dist
+tests
+examples
+docs
+*.mp4
+*.ts
+!src/**/*.ts
+.git
+.env
+.claude
+*.html
