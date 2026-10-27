@@ -23,18 +23,25 @@
 // ============================================================================
 
 export function readUint32(data, offset) {
-  return (data[offset] << 24) | (data[offset + 1] << 16) | 
-         (data[offset + 2] << 8) | data[offset + 3];
+  // `>>> 0`: bitwise ops yield int32, which turned values >= 2^31 (box sizes,
+  // stco offsets in files over 2 GB) negative.
+  return ((data[offset] << 24) | (data[offset + 1] << 16) |
+          (data[offset + 2] << 8) | data[offset + 3]) >>> 0;
 }
 
 export function readUint64(data, offset) {
-  // For simplicity, only handle lower 32 bits (files < 4GB)
-  return readUint32(data, offset + 4);
+  // Exact up to 2^53 (9 PB) — co64 offsets in files over 4 GB need the high word.
+  return readUint32(data, offset) * 0x100000000 + readUint32(data, offset + 4);
 }
 
 export function readInt32(data, offset) {
   const val = readUint32(data, offset);
-  return (val & 0x80000000) ? val - 0x100000000 : val;
+  return val > 0x7FFFFFFF ? val - 0x100000000 : val;
+}
+
+export function readInt64(data, offset) {
+  const hi = readInt32(data, offset);
+  return hi * 0x100000000 + readUint32(data, offset + 4);
 }
 
 export function boxType(data, offset) {
@@ -203,19 +210,14 @@ export function parseStsc(data, offset) {
  * Parse ctts (composition time offset) box for B-frames
  */
 export function parseCtts(data, offset) {
-  const version = data[offset + 8];
   const entryCount = readUint32(data, offset + 12);
   const entries = [];
   let pos = offset + 16;
   for (let i = 0; i < entryCount; i++) {
     const sampleCount = readUint32(data, pos);
-    let sampleOffset;
-    if (version === 0) {
-      sampleOffset = readUint32(data, pos + 4);
-    } else {
-      // Version 1: signed offset
-      sampleOffset = readInt32(data, pos + 4);
-    }
+    // Signed for both versions: version 0 is unsigned per spec, but files
+    // with negative v0 offsets exist and ffmpeg and browsers read them signed.
+    const sampleOffset = readInt32(data, pos + 4);
     entries.push({ sampleCount, sampleOffset });
     pos += 8;
   }
@@ -299,12 +301,146 @@ export function parseAvcC(data, offset) {
 }
 
 /**
- * Parse mp4a audio sample entry for sample rate and channels
+ * Parse mp4a audio sample entry for sample rate and channels, plus the
+ * AudioSpecificConfig from its esds child when present.
  */
 export function parseMp4a(data, offset) {
   const channels = (data[offset + 24] << 8) | data[offset + 25];
   const sampleRate = (data[offset + 32] << 8) | data[offset + 33];
-  return { channels, sampleRate };
+  const size = readUint32(data, offset);
+  // Sample entry: 8 header + 28 fields, then child boxes (esds).
+  const esds = findBox(data, 'esds', offset + 36, offset + size);
+  const config = esds ? parseEsds(data, esds.offset, esds.size) : null;
+  const objectTypeIndication = config?.objectTypeIndication;
+  const asc = config?.objectType !== undefined ? config : null;
+  return {
+    channels, sampleRate,
+    ...(objectTypeIndication !== undefined ? { objectTypeIndication } : {}),
+    ...(asc ? { asc } : {}),
+  };
+}
+
+const AAC_SAMPLE_RATES = [96000, 88200, 64000, 48000, 44100, 32000, 24000,
+  22050, 16000, 12000, 11025, 8000, 7350];
+
+/** MPEG-4 Audio, MPEG-2 AAC Main / LC / SSR (objectTypeIndication). */
+const AAC_OBJECT_TYPE_INDICATIONS = [0x40, 0x66, 0x67, 0x68];
+
+/**
+ * Parse an esds box down to the AAC AudioSpecificConfig (ISO 14496-1 / -3).
+ * Non-AAC streams (e.g. MP3, 0x69/0x6B) return only their
+ * `objectTypeIndication`.
+ * @returns {{objectTypeIndication:number, objectType?:number,
+ *   samplingFrequencyIndex?:number, sampleRate?:number,
+ *   channelConfiguration?:number, bytes?:Uint8Array}|null}
+ */
+export function parseEsds(data, offset, size) {
+  const end = offset + size;
+  let pos = offset + 12; // box header + version/flags
+
+  // Descriptor length: up to 4 bytes, 7 bits each.
+  const readLen = () => {
+    let len = 0;
+    for (let i = 0; i < 4 && pos < end; i++) {
+      const b = data[pos++];
+      len = (len << 7) | (b & 0x7F);
+      if (!(b & 0x80)) break;
+    }
+    return len;
+  };
+
+  let objectTypeIndication;
+  while (pos < end) {
+    const tag = data[pos++];
+    const len = readLen();
+    if (tag === 0x03) { // ES_Descriptor
+      const flags = data[pos + 2];
+      pos += 3;
+      if (flags & 0x80) pos += 2;                 // dependsOn_ES_ID
+      if (flags & 0x40) pos += 1 + data[pos];     // URL
+      if (flags & 0x20) pos += 2;                 // OCR_ES_Id
+    } else if (tag === 0x04) { // DecoderConfigDescriptor
+      objectTypeIndication = data[pos];
+      if (!AAC_OBJECT_TYPE_INDICATIONS.includes(objectTypeIndication)) return { objectTypeIndication };
+      pos += 13;
+    } else if (tag === 0x05) { // DecoderSpecificInfo = AudioSpecificConfig
+      const bytes = data.slice(pos, pos + len);
+      if (bytes.length < 2) return objectTypeIndication === undefined ? null : { objectTypeIndication };
+      let bit = 0;
+      const read = (n) => {
+        let v = 0;
+        for (let i = 0; i < n; i++, bit++) v = (v << 1) | ((bytes[bit >> 3] >> (7 - (bit & 7))) & 1);
+        return v;
+      };
+      let objectType = read(5);
+      if (objectType === 31) objectType = 32 + read(6);
+      const samplingFrequencyIndex = read(4);
+      const sampleRate = samplingFrequencyIndex === 15 ? read(24) : AAC_SAMPLE_RATES[samplingFrequencyIndex];
+      const channelConfiguration = read(4);
+      return { objectTypeIndication, objectType, samplingFrequencyIndex, sampleRate, channelConfiguration, bytes };
+    } else {
+      pos += len;
+    }
+  }
+  return objectTypeIndication === undefined ? null : { objectTypeIndication };
+}
+
+/**
+ * Parse an elst (edit list) box.
+ * @returns {Array<{segmentDuration:number, mediaTime:number, mediaRate:number}>}
+ *   segmentDuration in movie timescale; mediaTime in media timescale (-1 = empty edit).
+ */
+export function parseElst(data, offset) {
+  const version = data[offset + 8];
+  const count = readUint32(data, offset + 12);
+  const entries = [];
+  let pos = offset + 16;
+  for (let i = 0; i < count; i++) {
+    if (version === 1) {
+      entries.push({
+        segmentDuration: readUint64(data, pos),
+        mediaTime: readInt64(data, pos + 8),
+        mediaRate: readInt32(data, pos + 16) / 65536,
+      });
+      pos += 20;
+    } else {
+      entries.push({
+        segmentDuration: readUint32(data, pos),
+        mediaTime: readInt32(data, pos + 4),
+        mediaRate: readInt32(data, pos + 8) / 65536,
+      });
+      pos += 12;
+    }
+  }
+  return entries;
+}
+
+/** Movie timescale from moov/mvhd (edit list durations use it). */
+export function parseMvhdTimescale(moov) {
+  const mvhd = findBox(moov, 'mvhd', 8);
+  if (!mvhd) return 0;
+  return moov[mvhd.offset + 8] === 1
+    ? readUint32(moov, mvhd.offset + 28)
+    : readUint32(moov, mvhd.offset + 20);
+}
+
+/**
+ * Reduce an edit list to the common case: leading empty edits delay the track,
+ * the first non-empty edit picks the media time presented at that point.
+ * Presentation time = media time - mediaTime + emptyDuration (all seconds).
+ */
+export function summarizeEdits(entries, mediaTimescale, movieTimescale) {
+  let emptyDuration = 0;
+  let mediaTime = 0;
+  for (const e of entries) {
+    if (e.mediaTime === -1) {
+      emptyDuration += movieTimescale ? e.segmentDuration / movieTimescale : 0;
+      continue;
+    }
+    mediaTime = e.mediaTime / mediaTimescale;
+    break;
+  }
+  return { emptyDuration, mediaTime, entryCount: entries.length };
 }
 
 // ============================================================================
@@ -367,7 +503,17 @@ export function analyzeTrack(moov, trakOffset, trakSize) {
       audioConfig = parseMp4a(moov, mp4a.offset);
     }
   }
-  
+
+  // Edit list (trak/edts/elst). Sample times below stay in media time; callers
+  // that need presentation time apply `edit` (see summarizeEdits).
+  const edts = findBox(moov, 'edts', trakOffset + 8, trakOffset + trakSize);
+  const elst = edts ? findBox(moov, 'elst', edts.offset + 8, edts.offset + edts.size) : null;
+  const edit = summarizeEdits(
+    elst ? parseElst(moov, elst.offset) : [],
+    mediaInfo.timescale,
+    parseMvhdTimescale(moov),
+  );
+
   return {
     trackId: tkhdInfo.trackId,
     type: handlerType,
@@ -384,7 +530,8 @@ export function analyzeTrack(moov, trakOffset, trakSize) {
     stsc: stscBox ? parseStsc(moov, stscBox.offset) : [],
     ctts: cttsBox ? parseCtts(moov, cttsBox.offset) : [],
     codecConfig,
-    audioConfig
+    audioConfig,
+    edit
   };
 }
 
@@ -411,20 +558,24 @@ export function buildSampleTable(track) {
     }
   }
   
+  // stss lists 1-based sync sample numbers; a Set keeps this O(n) — includes()
+  // per sample was O(samples × keyframes) (≈64M checks for a 42-min 720p file).
+  const syncSamples = stss.length > 0 ? new Set(stss) : null;
+
   let sampleIndex = 0;
   let currentDts = 0;
   let sttsEntryIndex = 0;
   let sttsRemaining = stts[0]?.sampleCount || 0;
   
+  // stsc entries are sorted by firstChunk: walk them alongside the chunks.
+  // (Scanning all entries per chunk was O(chunks × entries) — 2.5 s for an
+  // interleaved 42-min audio track with 66k entries.)
+  let stscIndex = -1;
+
   for (let chunkIndex = 0; chunkIndex < stco.length; chunkIndex++) {
     // Find samples per chunk for this chunk
-    let samplesInChunk = 1;
-    for (let i = stsc.length - 1; i >= 0; i--) {
-      if (stsc[i].firstChunk <= chunkIndex + 1) {
-        samplesInChunk = stsc[i].samplesPerChunk;
-        break;
-      }
-    }
+    while (stscIndex + 1 < stsc.length && stsc[stscIndex + 1].firstChunk <= chunkIndex + 1) stscIndex++;
+    const samplesInChunk = stscIndex >= 0 ? stsc[stscIndex].samplesPerChunk : 1;
     
     let chunkOffset = stco[chunkIndex];
     
@@ -432,10 +583,11 @@ export function buildSampleTable(track) {
       const size = stsz[sampleIndex];
       const duration = stts[sttsEntryIndex]?.sampleDelta || 0;
       
-      // PTS = DTS + composition offset (ctts)
+      // PTS = DTS + composition offset (ctts). Version-1 ctts offsets may be
+      // negative; they are kept (clamping to DTS broke B-frame order).
       const compositionOffset = cttsOffsets[sampleIndex] || 0;
-      const pts = Math.max(currentDts, currentDts + compositionOffset);
-      
+      const pts = currentDts + compositionOffset;
+
       samples.push({
         index: sampleIndex,
         offset: chunkOffset,
@@ -444,7 +596,7 @@ export function buildSampleTable(track) {
         pts: pts / timescale,
         time: pts / timescale,
         duration: duration / timescale,
-        isKeyframe: stss.length === 0 || stss.includes(sampleIndex + 1)
+        isKeyframe: !syncSamples || syncSamples.has(sampleIndex + 1)
       });
       
       chunkOffset += size;
@@ -466,42 +618,60 @@ export function buildSampleTable(track) {
  * Build HLS-style segments from video samples
  * @param {Array} videoSamples - Video sample table
  * @param {number} targetDuration - Target segment duration in seconds
+ * @param {object} [options]
+ * @param {'before'|'after'} [options.boundary='before'] - 'before': segments
+ *   stay under the target; 'after': each ends at the first keyframe at or
+ *   after it (ffmpeg's hls_time)
  * @returns {Array} Array of segment definitions
  */
-export function buildSegments(videoSamples, targetDuration = 4) {
+export function buildSegments(videoSamples, targetDuration = 4, options = {}) {
+  const after = options.boundary === 'after';
   const segments = [];
-  const keyframes = videoSamples.filter(s => s.isKeyframe);
-  
-  for (let i = 0; i < keyframes.length; i++) {
-    const start = keyframes[i];
-    const end = keyframes[i + 1] || videoSamples[videoSamples.length - 1];
-    
-    const videoStart = start.index;
-    const videoEnd = end ? end.index : videoSamples.length;
-    
-    const duration = (end ? end.time : 
-      videoSamples[videoSamples.length - 1].time + 
-      videoSamples[videoSamples.length - 1].duration) - start.time;
-    
-    // Combine short segments
-    if (segments.length > 0 && 
-        segments[segments.length - 1].duration + duration < targetDuration) {
-      const prev = segments[segments.length - 1];
-      prev.videoEnd = videoEnd;
-      prev.duration += duration;
-      prev.endTime = start.time + duration;
+  if (videoSamples.length === 0) return segments;
+
+  // `videoSamples` are in decode order and `index` is the position in the
+  // full table; slices use positions, so map keyframes to positions here.
+  const keyPositions = [];
+  for (let i = 0; i < videoSamples.length; i++) {
+    if (videoSamples[i].isKeyframe) keyPositions.push(i);
+  }
+  if (keyPositions.length === 0) return segments;
+
+  // End of presentation: with B-frames the last sample in decode order is
+  // not the last one shown, so take the max over all samples.
+  let presentationEnd = -Infinity;
+  for (const s of videoSamples) presentationEnd = Math.max(presentationEnd, s.time + s.duration);
+
+  // GOPs are merged into segments. 'before' (default): a segment takes the
+  // next GOP only while it stays under `targetDuration`. 'after' (ffmpeg's
+  // hls_time): a segment ends at the first keyframe at or after
+  // `targetDuration` from its start (within 50 ms).
+  for (let k = 0; k < keyPositions.length; k++) {
+    const startPos = keyPositions[k];
+    const endPos = k + 1 < keyPositions.length ? keyPositions[k + 1] : videoSamples.length;
+    const startTime = videoSamples[startPos].time;
+    const endTime = endPos < videoSamples.length ? videoSamples[endPos].time : presentationEnd;
+    const prev = segments[segments.length - 1];
+
+    const merge = prev && (after
+      ? prev.duration < targetDuration - 0.05
+      : prev.duration + (endTime - startTime) < targetDuration);
+    if (merge) {
+      prev.videoEnd = endPos;
+      prev.endTime = endTime;
+      prev.duration = endTime - prev.startTime;
     } else {
       segments.push({
         index: segments.length,
-        startTime: start.time,
-        endTime: start.time + duration,
-        duration,
-        videoStart,
-        videoEnd
+        startTime,
+        endTime,
+        duration: endTime - startTime,
+        videoStart: startPos,
+        videoEnd: endPos
       });
     }
   }
-  
+
   return segments;
 }
 
@@ -653,8 +823,8 @@ export class MP4Parser {
    * @param {number} targetDuration - Target segment duration in seconds
    * @returns {Array} Segment definitions
    */
-  buildSegments(targetDuration = 4) {
-    return buildSegments(this.videoSamples, targetDuration);
+  buildSegments(targetDuration = 4, options = {}) {
+    return buildSegments(this.videoSamples, targetDuration, options);
   }
   
   /**

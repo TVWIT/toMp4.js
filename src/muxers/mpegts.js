@@ -51,8 +51,9 @@ export class TSMuxer {
     this.pps = null;
     this.hasAudio = false;
     this.pendingAudio = [];
+    this.nalLengthSize = 4;
   }
-  
+
   /**
    * Set SPS/PPS from encoder output
    * @param {Uint8Array} sps - Sequence Parameter Set
@@ -61,6 +62,14 @@ export class TSMuxer {
   setSpsPps(sps, pps) {
     this.sps = new Uint8Array(sps);
     this.pps = new Uint8Array(pps);
+  }
+
+  /**
+   * Size of the NAL length prefix in AVCC samples (avcC lengthSizeMinusOne + 1).
+   * @param {1|2|4} size
+   */
+  setNalLengthSize(size) {
+    if (size === 1 || size === 2 || size === 4) this.nalLengthSize = size;
   }
   
   /**
@@ -159,12 +168,13 @@ export class TSMuxer {
     let offset = 0;
     let iterations = 0;
     const maxIterations = 10000;
-    
-    while (offset + 4 <= avccData.length && iterations < maxIterations) {
+    const lenSize = this.nalLengthSize;
+
+    while (offset + lenSize <= avccData.length && iterations < maxIterations) {
       iterations++;
-      const len = (avccData[offset] << 24) | (avccData[offset + 1] << 16) | 
-                  (avccData[offset + 2] << 8) | avccData[offset + 3];
-      offset += 4;
+      let len = 0;
+      for (let b = 0; b < lenSize; b++) len = len * 256 + avccData[offset + b];
+      offset += lenSize;
       
       // Safety: bail on invalid NAL length
       if (len <= 0 || len > avccData.length - offset) {
@@ -291,16 +301,18 @@ export class TSMuxer {
       
       const remaining = pes.length - offset;
       
-      // First packet of video keyframe gets adaptation field with PCR + RAI
-      if (first && isKey && type === 'video') {
-        const afLen = 7;
-        const payloadSpace = 188 - 4 - 1 - afLen;
-        const payloadLen = Math.min(remaining, payloadSpace);
-        
+      // First packet of every video PES carries a PCR (the PCR PID is the
+      // video PID; players expect one at least every ~100 ms). Keyframes also
+      // set random_access_indicator.
+      if (first && type === 'video') {
+        const maxPayload = 188 - 4 - 1 - 7; // header, AF length byte, AF flags + PCR
+        const payloadLen = Math.min(remaining, maxPayload);
+        const afLen = 183 - payloadLen;     // grows with stuffing for short PES
+
         pkt[3] = 0x30 | (this.cc[cc] & 0x0F);
         pkt[4] = afLen;
-        pkt[5] = 0x50; // PCR flag + random_access_indicator
-        
+        pkt[5] = isKey ? 0x50 : 0x10; // PCR flag (+ random_access_indicator)
+
         // PCR = 33-bit base (90kHz) + 6 reserved bits + 9-bit extension (27MHz)
         // We only use the base, extension = 0
         const pcrBase = BigInt(pts90k);
@@ -308,10 +320,13 @@ export class TSMuxer {
         pkt[7] = Number((pcrBase >> 17n) & 0xFFn);
         pkt[8] = Number((pcrBase >> 9n) & 0xFFn);
         pkt[9] = Number((pcrBase >> 1n) & 0xFFn);
-        pkt[10] = (Number(pcrBase & 1n) << 7) | 0x7E; // LSB of base + 6 reserved (111111) 
+        pkt[10] = (Number(pcrBase & 1n) << 7) | 0x7E; // LSB of base + 6 reserved (111111)
         pkt[11] = 0; // 9-bit extension = 0
-        
-        pkt.set(pes.slice(offset, offset + payloadLen), 12);
+        // Stuffing after the PCR when the PES doesn't fill the packet (was left
+        // as zeros, which corrupted frames under 176 bytes).
+        for (let i = 12; i < 5 + afLen; i++) pkt[i] = 0xFF;
+
+        pkt.set(pes.slice(offset, offset + payloadLen), 5 + afLen);
         offset += payloadLen;
       } else if (remaining < 184) {
         // Need stuffing

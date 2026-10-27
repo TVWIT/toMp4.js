@@ -6,7 +6,7 @@
 
 ## Quick Reference
 
-- **Package**: `@invintusmedia/tomp4` (v1.2.1)
+- **Package**: `@invintusmedia/tomp4` (v1.8.0)
 - **Repo**: TVWIT/toMp4.js
 - **License**: MIT
 - **Entry**: `src/index.js`
@@ -16,7 +16,9 @@
 ## Commands
 
 ```bash
-npm test              # Run all tests (hls-map, thumbnail, clip, mp4, av-sync, mp4-clip)
+npm test              # Run the default chain (see package.json "test")
+npm run test:clip-sync # Clip start frame + A/V sync on real encodes (TS/CMAF HLS, MP4); needs ffmpeg
+npm run test:remote-hls # RemoteMp4 + MP4 parser/TS muxer fixes; needs ffmpeg for the encoded-file tests
 npm run test:clip     # MPEG-TS clipping tests
 npm run test:fmp4-clip # fMP4 clipping tests
 npm run test:mp4      # MP4 parser tests
@@ -74,7 +76,15 @@ Four clipping paths, all frame-accurate:
 
 ### A/V Sync
 
-Audio and video are always on the same timeline. When there's preroll (clip between keyframes), audio is included from the keyframe time — not the requested start — so both tracks have matching durations. Both get edit lists with the same preroll offset. This ensures A/V sync even on players that ignore edit lists.
+Audio and video are always on the same timeline. When there's preroll (clip between keyframes), audio is included from the keyframe time — not the requested start — so both tracks have matching durations. This keeps A/V sync even on players that ignore edit lists.
+
+Clip times are presentation times:
+- Source edit lists (B-frame delay, AAC priming, delayed tracks) are applied before cutting — `convertSamples` in `mp4-clip.js`, `editShift` in `fmp4/converter.js`.
+- The start snaps to the frame that contains it, and every track is cut at that instant.
+- Each track's edit list skips from its own first sample: video includes the keyframe's composition offset (its media timeline starts at the keyframe's DTS), audio its offset from the keyframe. They are not equal numbers; `tests/av-sync.test.js` checks the right invariant.
+- HLS downloads clip relative to the first downloaded video frame (`_clipFromFirstFrame`), not the earliest sample or the fMP4's absolute decode time.
+
+`tests/clip-sync.test.js` measures this on real encodes by content (frame MD5 / packet hash), not timestamps.
 
 ### HLS-to-HLS Clipping
 
@@ -97,6 +107,10 @@ Audio and video are always on the same timeline. When there's preroll (clip betw
 ### No External Dependencies
 
 Everything is pure JavaScript — no ffmpeg, no wasm, no native modules. The library parses container formats and remuxes raw codec data into MP4 boxes directly.
+
+## Parked work
+
+- **OTFP-compatible HLS packager** (a `RemoteMp4` server that matches Fastly On-the-Fly Packager URLs, plus failover VCL): branch `feat/otfp-packager`, `packager/README.md` and `docs/plans/2026-10-26-otfp-compatible-packager.md` there. Built and tested 2026-10-27, never deployed; Fastly OTFP was fixed instead.
 
 ## Conventions
 

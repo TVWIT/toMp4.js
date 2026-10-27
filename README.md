@@ -55,6 +55,8 @@ const mp4 = await toMp4(data, {
 })
 ```
 
+clips start on the frame that contains `startTime`, with audio cut at the same instant. the source's edit lists (B-frame delay, AAC priming) are honored.
+
 ### stitch multiple fMP4 segments
 
 ```js

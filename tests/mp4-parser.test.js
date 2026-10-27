@@ -196,6 +196,8 @@ const errorTests = [
     } catch (err) {
       assert(err.message.includes('HTTP') || err.message.includes('fetch'), 
              'Should throw HTTP error');
+      // OTFP-style classification for the packager: missing source → 404.
+      assert(err.status === 404 && err.code === 'Origin 404', `Should be Origin 404, got ${err.status} ${err.code}`);
     }
   }),
   

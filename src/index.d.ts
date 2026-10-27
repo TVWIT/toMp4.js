@@ -250,8 +250,11 @@ declare module '@invintusmedia/tomp4' {
     /**
      * Build HLS-style segments
      * @param targetDuration - Target segment duration in seconds (default 4)
+     * @param options.boundary - 'before' (default): segments stay under the
+     *   target; 'after': each ends at the first keyframe at or after it
+     *   (ffmpeg's hls_time)
      */
-    buildSegments(targetDuration?: number): RemoteMp4Segment[];
+    buildSegments(targetDuration?: number, options?: { boundary?: 'before' | 'after' }): RemoteMp4Segment[];
 
     /**
      * Get sample data for a range of samples
@@ -287,6 +290,26 @@ declare module '@invintusmedia/tomp4' {
     audioSampleCount: number;
     /** Number of keyframes */
     keyframeCount: number;
+    /** Frames per second */
+    frameRate: number;
+    /** RFC 6381 codecs, e.g. `avc1.4d4028,mp4a.40.2` */
+    codecs: string;
+    /** Peak bitrate estimate (bits/s, MPEG-TS) */
+    bandwidth: number;
+    /** Average bitrate estimate (bits/s, MPEG-TS) */
+    averageBandwidth: number;
+    /** Edit lists applied (seconds); null when the track is absent */
+    edits: { video: RemoteMp4Edit; audio: RemoteMp4Edit | null } | null;
+    /** Origin ETag pinned at init */
+    etag: string | null;
+  }
+
+  export interface RemoteMp4Edit {
+    /** Leading empty edits (track starts this much later) */
+    emptyDuration: number;
+    /** Media time presented first (trimmed from the start) */
+    mediaTime: number;
+    entryCount: number;
   }
 
   export interface RemoteMp4Segment {
@@ -301,10 +324,58 @@ declare module '@invintusmedia/tomp4' {
   }
 
   export interface RemoteMp4Options {
-    /** Target segment duration in seconds (default 4) */
+    /** Target segment duration in seconds, keyframe-aligned (default 4) */
     segmentDuration?: number;
+    /**
+     * 'before' (default): segments stay under `segmentDuration`; 'after':
+     * each ends at the first keyframe at or after it (ffmpeg's hls_time)
+     */
+    segmentBoundary?: 'before' | 'after';
+    /** Per-request origin timeout in ms, whole body (default 30000) */
+    timeoutMs?: number;
+    /** Retries for network errors / 5xx (default 2) */
+    retries?: number;
+    /** Extra origin request headers */
+    headers?: Record<string, string>;
+    /** fetch implementation (default globalThis.fetch) */
+    fetch?: typeof fetch;
     /** Progress callback */
     onProgress?: (message: string) => void;
+  }
+
+  export interface RemoteMp4PlaylistOptions {
+    /** Segment URI for a 0-based index (default `segment{index}.ts`) */
+    segmentName?: (index: number) => string;
+    /** Slice start, seconds */
+    start?: number;
+    /** Slice end, seconds */
+    end?: number;
+  }
+
+  /**
+   * Error with an HTTP-style status; `code` mirrors Fastly OTFP's
+   * X-Fastly-Package-Error ("Origin 404", "Origin timeout", ...).
+   */
+  export class RemoteMp4Error extends Error {
+    constructor(code: string, options?: { status?: number; detail?: string; cause?: unknown; retryable?: boolean });
+    readonly code: string;
+    readonly status: number;
+    readonly retryable: boolean;
+  }
+
+  /** A sample from RemoteMp4's tables (presentation-time seconds; edit lists applied) */
+  export interface RemoteMp4Sample {
+    /** Position in the table (matches segment videoStart/videoEnd) */
+    index: number;
+    /** Byte offset in the file */
+    offset: number;
+    size: number;
+    duration: number;
+    pts: number;
+    dts: number;
+    /** Presentation time (same as pts) */
+    time: number;
+    isKeyframe: boolean;
   }
 
   /**
@@ -338,6 +409,28 @@ declare module '@invintusmedia/tomp4' {
     readonly hasBframes: boolean;
     /** HLS segments */
     readonly segments: RemoteMp4Segment[];
+    /** Frames per second */
+    readonly frameRate: number;
+    /** RFC 6381 codecs */
+    readonly codecs: string;
+    /** Peak bitrate estimate (bits/s) */
+    readonly bandwidth: number;
+    /** Average bitrate estimate (bits/s) */
+    readonly averageBandwidth: number;
+    /** Origin ETag pinned at init (null when absent or not exposed cross-origin) */
+    readonly etag: string | null;
+    /** Origin Last-Modified at init */
+    readonly lastModified: string | null;
+    /** The file's moov box */
+    readonly moov: Uint8Array | null;
+    /** Parsed video track (sample tables in media time) */
+    readonly videoTrack: object | null;
+    /** Parsed audio track (sample tables in media time) */
+    readonly audioTrack: object | null;
+    /** Video samples in decode order, built on first access */
+    readonly videoSamples: RemoteMp4Sample[];
+    /** Audio samples, built on first access */
+    readonly audioSamples: RemoteMp4Sample[];
 
     /**
      * Create RemoteMp4 from URL
@@ -351,17 +444,26 @@ declare module '@invintusmedia/tomp4' {
     /** Get segment definitions */
     getSegments(): RemoteMp4Segment[];
 
+    /** Segments overlapping [start, end) seconds; all when unset */
+    segmentsInRange(start?: number, end?: number): RemoteMp4Segment[];
+
     /**
      * Generate HLS master playlist
      * @param baseUrl - Base URL for playlist references (default '')
      */
-    getMasterPlaylist(baseUrl?: string): string;
+    getMasterPlaylist(baseUrl?: string, variantUri?: string): string;
+
+    /** Master playlist for several renditions, in the order given */
+    static buildMasterPlaylist(variants: Array<{ source: RemoteMp4; uri: string }>): string;
+
+    /** `#EXT-X-STREAM-INF` attributes (BANDWIDTH, CODECS, RESOLUTION, ...) */
+    getStreamInfAttributes(): string;
 
     /**
      * Generate HLS media playlist
      * @param baseUrl - Base URL for segment references (default '')
      */
-    getMediaPlaylist(baseUrl?: string): string;
+    getMediaPlaylist(baseUrl?: string, options?: RemoteMp4PlaylistOptions): string;
 
     /**
      * Get a segment as MPEG-TS data
@@ -424,6 +526,9 @@ declare module '@invintusmedia/tomp4' {
     /** Remote MP4 parser for on-demand HLS serving */
     const RemoteMp4: typeof import('@invintusmedia/tomp4').RemoteMp4;
 
+    /** Error thrown by RemoteMp4 (HTTP-style status, OTFP-style code) */
+    const RemoteMp4Error: typeof import('@invintusmedia/tomp4').RemoteMp4Error;
+
     /** 
      * Stitch multiple fMP4 segments into a single MP4
      * For live streams saved as 4-second fMP4 chunks
@@ -460,5 +565,8 @@ declare module '@invintusmedia/tomp4' {
   }
 
   export default toMp4;
-  export { toMp4, MP4Parser, RemoteMp4, stitchFmp4, thumbnail, thumbnails, ImageResult };
+  export { toMp4 };
+  export const stitchFmp4: typeof toMp4.stitchFmp4;
+  export const thumbnail: typeof toMp4.thumbnail;
+  export const thumbnails: typeof toMp4.thumbnails;
 }

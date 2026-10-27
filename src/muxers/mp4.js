@@ -151,6 +151,9 @@ export class MP4Muxer {
    * @param {TSParser} parser - Parser with video/audio access units
    * @param {Object} [options] - Muxer options
    * @param {number} [options.preroll=0] - Pre-roll time in 90kHz ticks (for edit list)
+   * @param {boolean} [options.clipped=false] - Access units were clipped: both
+   *   tracks are normalized to the keyframe's PTS and presentation starts
+   *   `preroll` after it
    */
   constructor(parser, options = {}) {
     this.parser = parser;
@@ -159,6 +162,7 @@ export class MP4Muxer {
     this.audioSampleDuration = 1024;
     this.videoDimensions = null;
     this.preroll = options.preroll || 0;  // Pre-roll for precise clipping
+    this.clipped = options.clipped === true;
   }
 
   getVideoDimensions() {
@@ -319,8 +323,14 @@ export class MP4Muxer {
     const firstAU = this.parser.videoAccessUnits[0];
     const firstVideoPts = firstAU.pts;
 
-    // Use preroll for precise clipping, or firstVideoPts for timestamp normalization
-    const mediaTime = this.preroll > 0 ? this.preroll : firstVideoPts;
+    // Clipped: the media timeline starts at the keyframe's DTS, so the first
+    // shown frame's composition time is the preroll plus the keyframe's
+    // composition offset (the B-frame delay; its PTS is 0 after clipping).
+    // Otherwise use preroll for precise clipping, or firstVideoPts for
+    // timestamp normalization.
+    const mediaTime = this.clipped
+      ? Math.max(0, this.preroll - firstAU.dts)
+      : (this.preroll > 0 ? this.preroll : firstVideoPts);
 
     // If no offset needed, skip edit list
     if (mediaTime === 0) return null;
@@ -539,7 +549,12 @@ export class MP4Muxer {
     // same timeline as video (both normalized from keyframe), so the audio
     // edit list must skip the same preroll to stay in sync.
     let mediaTime;
-    if (this.preroll > 0) {
+    if (this.clipped) {
+      // The first audio frame can start before the keyframe (it straddles
+      // it); skip from its own start to the first shown frame.
+      mediaTime = Math.max(0, Math.round((this.preroll - firstAudioPts) * this.audioTimescale / 90000));
+      if (mediaTime === 0) return null;
+    } else if (this.preroll > 0) {
       mediaTime = Math.round(this.preroll * this.audioTimescale / 90000);
     } else if (firstAudioPts !== 0) {
       mediaTime = Math.round(firstAudioPts * this.audioTimescale / 90000);

@@ -20,7 +20,7 @@
   "scripts": {
     "build": "node build.js",
     "dev": "npx serve . -p 3000",
-    "test": "npm run test:hls-map && npm run test:hls-audio-group && npm run test:cmaf-audio-group && npm run test:discontinuity && npm run test:mp3 && npm run test:stream && npm run test:thumbnail && npm run test:thumbnail-pick && npm run test:clip && npm run test:mp4 && npm run test:av-sync && npm run test:mp4-clip",
+    "test": "npm run test:hls-map && npm run test:remote-hls && npm run test:clip-sync && npm run test:hls-audio-group && npm run test:cmaf-audio-group && npm run test:discontinuity && npm run test:mp3 && npm run test:stream && npm run test:thumbnail && npm run test:thumbnail-pick && npm run test:clip && npm run test:mp4 && npm run test:av-sync && npm run test:mp4-clip",
     "test:hls-map": "node tests/hls-map.test.js",
     "test:hls-audio-group": "node tests/hls-audio-group.test.js",
     "test:cmaf-audio-group": "node tests/cmaf-audio-group.test.js",
@@ -40,7 +40,9 @@
     "release:minor": "npm version minor --no-git-tag-version && npm run release",
     "release:major": "npm version major --no-git-tag-version && npm run release",
     "prepublishOnly": "npm run build",
-    "test:stream": "node tests/stream.test.js"
+    "test:stream": "node tests/stream.test.js",
+    "test:remote-hls": "node tests/remote-hls.test.js",
+    "test:clip-sync": "node tests/clip-sync.test.js"
   },
   "repository": {
     "type": "git",
