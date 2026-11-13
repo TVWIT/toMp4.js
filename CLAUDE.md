@@ -6,7 +6,7 @@
 
 ## Quick Reference
 
-- **Package**: `@invintusmedia/tomp4` (v1.8.1)
+- **Package**: `@invintusmedia/tomp4` (v1.9.0)
 - **Repo**: TVWIT/toMp4.js
 - **License**: MIT
 - **Entry**: `src/index.js`
@@ -40,7 +40,7 @@ src/
 ├── hls.js                # HLS manifest parsing and segment downloading
 ├── hls-clip.js           # HLS-to-HLS clipper (CMAF output with edit lists)
 ├── mp4-clip.js           # Standard MP4-to-MP4 clipper
-├── thumbnail.js          # Video thumbnail extraction (browser-only)
+├── thumbnail.js          # Video thumbnail extraction (browser-only); registerSource() lets the host supply frames for inputs the library can't decode
 ├── remote/               # On-demand HLS serving from remote MP4 files
 ├── fmp4/
 │   ├── index.js          # fMP4 module entry

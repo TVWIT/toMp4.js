@@ -42,7 +42,7 @@ import { MP4Muxer } from './muxers/mp4.js';
 import { TSParser } from './parsers/mpegts.js';
 import { MP4Parser } from './parsers/mp4.js';
 import { RemoteMp4, RemoteMp4Error } from './remote/index.js';
-import { thumbnail, thumbnails, ImageResult } from './thumbnail.js';
+import { thumbnail, thumbnails, registerSource, ImageResult } from './thumbnail.js';
 import { Mp3Encoder, encodeMp3, audioToMp3, streamMp3, hlsAudioToMp3, Mp3Result } from './mp3/index.js';
 import { streamFmp4SeparateAudio, streamHlsToMp4 } from './stream/mp4.js';
 import { ArrayBufferTarget, FileSystemWritableTarget, canStreamToDisk, pickDownloadTarget } from './stream/target.js';
@@ -350,6 +350,7 @@ toMp4.transcode = transcode;
 toMp4.isWebCodecsSupported = isWebCodecsSupported;
 toMp4.thumbnail = thumbnail;
 toMp4.thumbnails = thumbnails;
+toMp4.registerSource = registerSource; // host-supplied frames for thumbnail() / thumbnails()
 
 // MP3 encoding (from-scratch MPEG-1/2 Layer III)
 toMp4.Mp3Encoder = Mp3Encoder;
@@ -375,7 +376,7 @@ toMp4.RemoteMp4 = RemoteMp4;
 toMp4.RemoteMp4Error = RemoteMp4Error;
 
 // Version (injected at build time for dist, read from package.json for ESM)
-toMp4.version = '1.8.1';
+toMp4.version = '1.9.0';
 
 // Export
 export {
@@ -407,6 +408,7 @@ export {
   // Thumbnails (browser-only)
   thumbnail,
   thumbnails,
+  registerSource,
   ImageResult,
   // Muxers
   TSMuxer,

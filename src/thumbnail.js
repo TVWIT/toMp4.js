@@ -112,6 +112,99 @@ function withTimeout(promise, timeoutMs, message) {
   });
 }
 
+// ── Source handlers ───────────────────────────────────────────
+// The host application can register a handler for inputs this library cannot
+// decode itself. thumbnail() / thumbnails() ask the handlers, in registration
+// order, before the built-in detection.
+const sources = [];
+
+/**
+ * Register a source handler for thumbnail() / thumbnails().
+ *
+ * @param {object} source
+ * @param {string} source.name - Used in error messages
+ * @param {(input: any) => boolean} source.test - Does this handler take the input?
+ * @param {(input: any, request: {time: number, signal?: AbortSignal}) => Promise<{image: any, time?: number, close?: () => void}>} source.frame
+ *   The picture at or nearest `time` (seconds). `image` is anything
+ *   `CanvasRenderingContext2D.drawImage` accepts, or an `ImageData`; `close`
+ *   is called once the image has been drawn.
+ * @returns {() => void} Removes the handler
+ */
+export function registerSource(source) {
+  if (!source || typeof source.test !== 'function' || typeof source.frame !== 'function') {
+    throw new TypeError('registerSource() needs { name, test(input), frame(input, { time, signal }) }');
+  }
+  sources.push(source);
+  return () => {
+    const i = sources.indexOf(source);
+    if (i >= 0) sources.splice(i, 1);
+  };
+}
+
+function sourceError(source, what, err) {
+  return new Error(`Source handler "${source.name}" ${what}: ${err?.message ?? err}`, { cause: err });
+}
+
+// The first registered handler whose test(input) is true, or undefined.
+function findSource(input) {
+  return sources.find((source) => {
+    try {
+      return source.test(input);
+    } catch (err) {
+      throw sourceError(source, 'test() threw', err);
+    }
+  });
+}
+
+async function sourceImage(source, input, time, encodeOptions) {
+  try {
+    // The thumbnail options carry no AbortSignal, so there is none to pass on.
+    const frame = await source.frame(input, { time, signal: undefined });
+    if (!frame?.image) throw new Error('frame() returned no image');
+    try {
+      const result = await encodeImage(frame.image, encodeOptions);
+      result.time = frame.time ?? time;
+      return result;
+    } finally {
+      frame.close?.();
+    }
+  } catch (err) {
+    throw sourceError(source, `failed at ${time}s`, err);
+  }
+}
+
+async function sourceThumbnails(source, input, { times, concurrency, onThumbnail, timeoutMs, ...encodeOptions }) {
+  const results = new Map();
+  let next = 0;
+  let firstError = null;
+  let settled = false; // a batch that timed out asks for no more frames
+
+  const worker = async () => {
+    while (!settled && next < times.length) {
+      const t = times[next++];
+      let image;
+      try {
+        image = await sourceImage(source, input, t, encodeOptions);
+      } catch (err) {
+        // One failing time does not fail the others: it is left out of the Map.
+        firstError ??= err;
+        continue;
+      }
+      results.set(t, image);
+      onThumbnail?.(t, image);
+    }
+  };
+
+  const run = async () => {
+    await Promise.all(Array.from({ length: Math.min(concurrency, times.length) }, worker));
+    if (!results.size && firstError) throw firstError;
+    return results;
+  };
+
+  return await withTimeout(run(), timeoutMs, 'Batch thumbnail generation timed out')
+    .finally(() => { settled = true; });
+}
+
 async function waitOnce(target, eventName) {
   return new Promise((resolve, reject) => {
     const onOk = () => {
@@ -203,6 +296,9 @@ async function seekToFrame(video, timeline, targetSec) {
  * @param {number} [options.quality] - 0..1 (jpeg/webp)
  * @param {number} [options.timeoutMs] - Overall timeout (default 15000)
  * @param {string} [options.hlsQuality] - 'lowest' | 'highest' (default 'lowest')
+ *
+ * An input taken by a handler from registerSource() is answered by that
+ * handler instead (`time` then defaults to 0, `hlsQuality` is unused).
  * @returns {Promise<ImageResult>}
  */
 export async function thumbnail(input, options = {}) {
@@ -216,6 +312,16 @@ export async function thumbnail(input, options = {}) {
     timeoutMs = 15000,
     hlsQuality = 'lowest',
   } = options;
+
+  const source = findSource(input);
+  if (source) {
+    // A handler picks its own nearest picture, so the default is the first one.
+    return await withTimeout(
+      sourceImage(source, input, options.time ?? 0, { maxWidth, mimeType, quality }),
+      timeoutMs,
+      'Thumbnail generation timed out',
+    );
+  }
 
   // If input is fragmented-only fMP4, allow caller to provide init+segments.
   // This addresses the "no ftyp/moov" case: fragments alone are not decodable
@@ -310,35 +416,7 @@ export async function thumbnail(input, options = {}) {
       const safeTime = dur > 0 ? Math.min(localSeek, Math.max(0, dur - 0.05)) : localSeek;
       await seek(video, safeTime);
 
-      const vw = video.videoWidth || 0;
-      const vh = video.videoHeight || 0;
-      if (!vw || !vh) throw new Error('No video frame available');
-
-      const scale = Math.min(1, maxWidth / vw);
-      const outW = Math.max(1, Math.round(vw * scale));
-      const outH = Math.max(1, Math.round(vh * scale));
-
-      const canvas = document.createElement('canvas');
-      canvas.width = outW;
-      canvas.height = outH;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) throw new Error('Canvas not supported');
-
-      ctx.drawImage(video, 0, 0, outW, outH);
-
-      const blob = await new Promise((resolve, reject) => {
-        try {
-          canvas.toBlob(
-            (b) => (b ? resolve(b) : reject(new Error('Failed to encode thumbnail'))),
-            mimeType,
-            quality,
-          );
-        } catch (err) {
-          reject(err);
-        }
-      });
-
-      return new ImageResult(blob, mimeType === 'image/png' ? 'thumbnail.png' : 'thumbnail.jpg');
+      return await encodeImage(video, { maxWidth, mimeType, quality });
     } catch (err) {
       const msg = err && err.message ? err.message : String(err);
       if (msg.toLowerCase().includes('taint') || msg.toLowerCase().includes('security')) {
@@ -364,16 +442,23 @@ export async function thumbnail(input, options = {}) {
 }
 
 /**
- * Capture a frame from a video element at a given time.
- * Shared by thumbnails() to avoid duplicating the canvas logic.
+ * Scale a picture down to `maxWidth` and encode it.
+ * `image` is anything drawImage accepts (a video element showing the wanted
+ * frame, an ImageBitmap, a canvas, a VideoFrame) or an ImageData.
+ * Shared by thumbnail() and the source handlers.
  */
-async function captureFrame(video, timeSeconds, { maxWidth, mimeType, quality }) {
-  const dur = Number.isFinite(video.duration) ? video.duration : 0;
-  const safeTime = dur > 0 ? Math.min(timeSeconds, Math.max(0, dur - 0.05)) : timeSeconds;
-  await seek(video, safeTime);
+async function encodeImage(image, { maxWidth, mimeType, quality }) {
+  if (typeof ImageData !== 'undefined' && image instanceof ImageData) {
+    // drawImage does not take an ImageData; put it on a canvas of its own size first.
+    const full = document.createElement('canvas');
+    full.width = image.width;
+    full.height = image.height;
+    full.getContext('2d').putImageData(image, 0, 0);
+    image = full;
+  }
 
-  const vw = video.videoWidth || 0;
-  const vh = video.videoHeight || 0;
+  const vw = image.videoWidth || image.displayWidth || image.naturalWidth || image.width || 0;
+  const vh = image.videoHeight || image.displayHeight || image.naturalHeight || image.height || 0;
   if (!vw || !vh) throw new Error('No video frame available');
 
   const scale = Math.min(1, maxWidth / vw);
@@ -386,7 +471,7 @@ async function captureFrame(video, timeSeconds, { maxWidth, mimeType, quality })
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Canvas not supported');
 
-  ctx.drawImage(video, 0, 0, outW, outH);
+  ctx.drawImage(image, 0, 0, outW, outH);
 
   const blob = await new Promise((resolve, reject) => {
     try {
@@ -425,6 +510,11 @@ async function captureFrame(video, timeSeconds, { maxWidth, mimeType, quality })
  *   (scene descriptions, title cards, etc.). Default prefers the I-frame
  *   playlist when one exists — faster, but snaps to the nearest keyframe,
  *   which can be several seconds away from the requested time.
+ *
+ * An input taken by a handler from registerSource() is answered by that
+ * handler instead: one frame() call per time, `concurrency` at once. A time
+ * whose frame() fails is left out of the Map; the call rejects only when
+ * every time failed.
  * @returns {Promise<Map<number, ImageResult>>}
  */
 export async function thumbnails(input, options = {}) {
@@ -443,6 +533,13 @@ export async function thumbnails(input, options = {}) {
   } = options;
 
   if (!times || !times.length) return new Map();
+
+  const source = findSource(input);
+  if (source) {
+    return await sourceThumbnails(source, input, {
+      times, concurrency, onThumbnail, timeoutMs, maxWidth, mimeType, quality,
+    });
+  }
 
   const run = async () => {
     // Step 1: Parse the HLS playlist once

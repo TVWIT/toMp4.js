@@ -78,7 +78,7 @@ declare module '@invintusmedia/tomp4' {
   }
 
   export interface ThumbnailOptions {
-    /** Time in seconds to capture (default ~0.15) */
+    /** Time in seconds to capture (default ~0.15; 0 for an input taken by a SourceHandler) */
     time?: number;
     /** Resize output to this width (preserve aspect) */
     maxWidth?: number;
@@ -105,7 +105,7 @@ declare module '@invintusmedia/tomp4' {
     timeoutMs?: number;
     /** HLS quality variant to use (default 'lowest') */
     hlsQuality?: 'lowest' | 'highest';
-    /** Max segments fetched in parallel (default 4) */
+    /** Max segments fetched in parallel, or SourceHandler frame() calls at once (default 4) */
     concurrency?: number;
     /** Called as each thumbnail completes */
     onThumbnail?: (time: number, image: ImageResult) => void;
@@ -122,11 +122,36 @@ declare module '@invintusmedia/tomp4' {
   export class ImageResult {
     blob: Blob;
     filename: string;
+    /** Time in seconds of the picture; set only on images from a SourceHandler */
+    time?: number;
     constructor(blob: Blob, filename?: string);
     toBlob(): Blob;
     toURL(): string;
     revokeURL(): void;
     download(filename?: string): void;
+  }
+
+  /** What a SourceHandler's frame() resolves to */
+  export interface SourceFrame {
+    /** Anything CanvasRenderingContext2D.drawImage accepts, or an ImageData */
+    image: CanvasImageSource | ImageData;
+    /** Time in seconds of the picture actually given (default: the time asked for) */
+    time?: number;
+    /** Called once the image has been drawn; release it here */
+    close?: () => void;
+  }
+
+  /**
+   * Supplies the pictures for thumbnail() / thumbnails() when the input is one
+   * the library cannot decode itself. Register with toMp4.registerSource().
+   */
+  export interface SourceHandler {
+    /** Used in error messages */
+    name: string;
+    /** Does this handler take the input given to thumbnail() / thumbnails()? */
+    test(input: unknown): boolean;
+    /** The picture at or nearest `time` (seconds). `signal` is currently always undefined. */
+    frame(input: any, request: { time: number; signal?: AbortSignal }): Promise<SourceFrame>;
   }
 
   export interface StitchFmp4Options {
@@ -562,6 +587,17 @@ declare module '@invintusmedia/tomp4' {
       input: string | HlsStream,
       options: ThumbnailsOptions
     ): Promise<Map<number, ImageResult>>;
+
+    /**
+     * Register a SourceHandler.
+     * thumbnail() and thumbnails() ask the registered handlers, in
+     * registration order, before the built-in detection; the first whose
+     * test(input) is true supplies the pictures. In thumbnails(), a time whose
+     * frame() fails is left out of the Map; the call rejects only when every
+     * time failed.
+     * @returns a function that removes the handler
+     */
+    function registerSource(source: SourceHandler): () => void;
   }
 
   export default toMp4;
@@ -569,4 +605,5 @@ declare module '@invintusmedia/tomp4' {
   export const stitchFmp4: typeof toMp4.stitchFmp4;
   export const thumbnail: typeof toMp4.thumbnail;
   export const thumbnails: typeof toMp4.thumbnails;
+  export const registerSource: typeof toMp4.registerSource;
 }

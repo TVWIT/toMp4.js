@@ -119,6 +119,35 @@ mp4.toArrayBuffer()         // ArrayBuffer
 mp4.revokeURL()             // free memory
 ```
 
+### thumbnails from your own source
+
+`toMp4.thumbnail()` and `toMp4.thumbnails()` (browser-only) grab frames from HLS and MP4. for an input they can't decode, register a handler that hands over the picture for a given time. scaling, encoding and the result stay the same.
+
+```js
+const unregister = toMp4.registerSource({
+  name: 'test-card',
+  test: (input) => input?.kind === 'test-card',   // does this handler take the input?
+  async frame(input, { time }) {                  // the picture at or nearest `time` (seconds)
+    const canvas = document.createElement('canvas')
+    canvas.width = 640
+    canvas.height = 360
+    const ctx = canvas.getContext('2d')
+    ctx.fillStyle = `hsl(${time * 36} 80% 50%)`
+    ctx.fillRect(0, 0, 640, 360)
+    return { image: canvas, time }                // + optional close(), called once drawn
+  },
+})
+
+const img = await toMp4.thumbnail({ kind: 'test-card' }, { time: 5, maxWidth: 160 })
+const imgs = await toMp4.thumbnails({ kind: 'test-card' }, { times: [0, 5, 10] })
+
+unregister()
+```
+
+- `image` is anything `drawImage` accepts (ImageBitmap, canvas, VideoFrame) or an `ImageData`
+- handlers are asked in registration order, before the built-in detection. the first whose `test()` is true wins
+- in `thumbnails()`, a time whose `frame()` fails is left out of the Map. the call rejects only when every time failed
+
 &nbsp;
 
 ### what it does
