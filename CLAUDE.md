@@ -6,7 +6,7 @@
 
 ## Quick Reference
 
-- **Package**: `@invintusmedia/tomp4` (v1.8.1)
+- **Package**: `@invintusmedia/tomp4` (v1.9.0)
 - **Repo**: TVWIT/toMp4.js
 - **License**: MIT
 - **Entry**: `src/index.js`

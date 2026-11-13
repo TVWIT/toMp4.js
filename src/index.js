@@ -376,7 +376,7 @@ toMp4.RemoteMp4 = RemoteMp4;
 toMp4.RemoteMp4Error = RemoteMp4Error;
 
 // Version (injected at build time for dist, read from package.json for ESM)
-toMp4.version = '1.8.1';
+toMp4.version = '1.9.0';
 
 // Export
 export {
